@@ -1,6 +1,6 @@
 import struct
 from dataclasses import dataclass
-from typing import BinaryIO, Optional, Sequence, Tuple
+from typing import BinaryIO, List, Optional, Sequence, Tuple
 
 
 def _readn(fo: BinaryIO, n: int) -> bytes:
@@ -43,10 +43,10 @@ class LocalFileHeader:
     extra_length: int
 
     filename: Optional[str] = None
-    extra: Sequence[bytes] = ()
+    parsed_extra: Sequence[Tuple[int, bytes]] = ()
 
     @classmethod
-    def read_from(cls, fo) -> Tuple["LocalFileHeader", bytes]:
+    def read_from(cls, fo: BinaryIO) -> Tuple["LocalFileHeader", bytes]:
         """
         Assuming fo is ready to read a valid local file header, reads the object
         and returns `(object, buffer)` while leaving the position ready to read
@@ -96,7 +96,7 @@ class LocalFileHeader:
 
                 if extra_id == 1:  # zip64 entry
                     sizes = [
-                        int.from_bytes(x[n : n + 8], "little")
+                        int.from_bytes(data[n : n + 8], "little")
                         for n in range(0, len(data), 8)
                     ]
                     if inst.usize == 0xFFFFFFFF:
@@ -109,9 +109,8 @@ class LocalFileHeader:
                         raise ValueError("Extra zip64 extra in LFH")
             if i != len(extra_data):
                 raise ValueError("Extra length")
-            inst.extra = tuple(extra)
+            inst.parsed_extra = tuple(extra)
             buf += extra_data
-            # TODO parse the extra
 
         return inst, buf
 

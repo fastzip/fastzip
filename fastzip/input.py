@@ -7,15 +7,15 @@ from .types import _readn, EndOfLocalFiles, LocalFileHeader
 
 
 class FastzipInput:
-    _filename: os.PathLike
+    _filename: os.PathLike[str]
     _fobj: BinaryIO
 
-    def __init__(self, filename: os.PathLike) -> None:
+    def __init__(self, filename: os.PathLike[str]) -> None:
         self._filename = filename
         self._fobj = open(filename, "rb")
 
     def entries(
-        self, callback: Optional[Callable[LocalFileHeader, bool]] = None
+        self, callback: Optional[Callable[[LocalFileHeader], bool]] = None
     ) -> Iterator[Tuple[LocalFileHeader, bytes]]:
         """
         Yields `(local_file_header, file_data)` for each entry that
@@ -37,7 +37,7 @@ class FastzipInput:
         # directory offsets.
 
         while True:
-            pos = self._fobj.tell()
+            # pos = self._fobj.tell()
             try:
                 lfh, buf = LocalFileHeader.read_from(self._fobj)
             except EndOfLocalFiles:
