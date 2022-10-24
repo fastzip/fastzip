@@ -1,1 +1,4 @@
 zstandard
+pywildcard
+glog
+click
