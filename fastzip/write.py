@@ -62,6 +62,7 @@ class WZip:
             self._fobj.write(prefix_data)
 
         self._central_directory = []
+        self._central_directory_min_ver = 0
         self._consumer_thread = threading.Thread(target=self._consumer)
         self._consumer_thread.start()
 
@@ -158,7 +159,10 @@ class WZip:
             pos = self._fobj.tell()
             running_crc = None
             running_size = 0
-            written_lfh = item.partial_lfh.dump()
+            written_lfh, min_ver = item.partial_lfh.dump()
+            self._central_directory_min_ver = max(
+                self._central_directory_min_ver, min_ver
+            )
             self._fobj.write(written_lfh)
 
             for f in item.compressed_data_futures:
@@ -195,7 +199,10 @@ class WZip:
             # outputting the central directory, so just defer all choices
             # until then.
             self._central_directory.append((pos, lfh))
-            new_lfh = lfh.dump()
+            new_lfh, min_ver = lfh.dump()
+            self._central_directory_min_ver = max(
+                self._central_directory_min_ver, min_ver
+            )
             if len(new_lfh) != len(written_lfh):
                 raise ValueError("lfh changed size")
             t = self._fobj.tell()

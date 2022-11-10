@@ -18,6 +18,9 @@ class BadLocalFileSignature(Exception):
     pass
 
 
+UINT32_MAX = 0xFFFFFFFF
+ZIP64_VERSION = 45
+
 FLAG_DATA_DESCRIPTOR = 1 << 3
 FLAG_FILENAME_UTF8 = 1 << 11
 
@@ -86,7 +89,7 @@ class LocalFileHeader:
     def _for_testing(cls, usize: int, filename: str) -> "LocalFileHeader":
         return cls(
             signature=LOCAL_FILE_HEADER_SIGNATURE,
-            version_needed=2,
+            version_needed=20,
             flags=0,
             method=0,
             mtime=0,
@@ -172,9 +175,9 @@ class LocalFileHeader:
                         int.from_bytes(data[n : n + 8], "little")
                         for n in range(0, len(data), 8)
                     ]
-                    if inst.usize == 0xFFFFFFFF:
+                    if inst.usize == UINT32_MAX:
                         inst.usize = sizes.pop(0)
-                    if inst.csize == 0xFFFFFFFF:
+                    if inst.csize == UINT32_MAX:
                         inst.csize = sizes.pop(0)
                     # We can validate here because section 4.5.3 is one of the
                     # few places that APPNOTE.TXT uses the modern word "MUST" --
@@ -189,8 +192,16 @@ class LocalFileHeader:
 
         return inst, buf
 
+    def replace_extra(self, num: int, value: bytes) -> None:
+        n = []
+        for i, v in self.parsed_extra:
+            if i != num:
+                n.append(i, v)
+        n.append((num, value))
+        self.parsed_extra = n
+
     # TODO not happy with the name
-    def dump(self) -> bytes:
+    def dump(self) -> Tuple[bytes, int]:
         flags = self.flags
         assert self.filename is not None
         try:
@@ -199,27 +210,38 @@ class LocalFileHeader:
         except UnicodeEncodeError:
             fn = self.filename.encode("utf-8")
             flags |= FLAG_FILENAME_UTF8
-        # TODO dump this too, it's important
-        extra = b""
+
+        usize = self.usize
+        csize = self.csize
+        min_ver = self.version_needed
+        if self.usize >= UINT32_MAX or self.csize >= UINT32_MAX:
+            zip64_extra = struct.pack("<QQ", self.usize, self.csize)
+            usize = UINT32_MAX
+            csize = UINT32_MAX
+            self.replace_extra(1, zip64_extra)
+            min_ver = max(self.version_needed, ZIP64_VERSION)
+        extra = b"".join(
+            struct.pack("<HH", i[0], len(i[1])) + i[1] for i in self.parsed_extra
+        )
+        extra_length = len(extra)
         return (
             struct.pack(
                 LOCAL_FILE_HEADER_FORMAT,
                 self.signature,
-                self.version_needed,
+                min_ver,
                 flags,
                 self.method,
                 self.mtime,
                 self.mdate,
                 self.crc32,
-                self.csize,
-                self.usize,
-                # TODO always recalculates filename length, I guess?
+                csize,
+                usize,
                 len(fn),
-                self.extra_length,
+                extra_length,
             )
             + fn
             + extra
-        )
+        ), min_ver
 
 
 CENTRAL_DIRECTORY_FORMAT = "<LHHHHHHLLLHHHHHLl"  # N.b. final lowercase
