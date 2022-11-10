@@ -39,15 +39,13 @@ class DeflateCompressor(BaseCompressor):
         # DEFLATE streams can be concatenated, as long as a Z_FINISH block is
         # not issued too early.
         _, m = file_object.mmapwrapper()
-        return [
-            pool.submit(
+        for start in block_starts:
+            yield pool.submit(
                 self._compress_block,
                 # TODO test with .mmapwrapper()
                 m[start : min(size, start + THREAD_BLOCK_SIZE)],
                 start == block_starts[-1],
             )
-            for start in block_starts
-        ]
 
     def _compress_block(
         self, data: Union[bytes, memoryview], final: bool
