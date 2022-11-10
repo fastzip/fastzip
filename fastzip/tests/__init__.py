@@ -1,9 +1,9 @@
 from .algo import LookupRoundtripTest
 from .chooser import ChooserTest
 from .read import ReadTest
+from .types import LocalFileHeaderTest
 from .util import UtilTest
 from .write import WZipTest
-from .types import LocalFileHeaderTest
 
 __all__ = [
     "LookupRoundtripTest",
@@ -11,5 +11,5 @@ __all__ = [
     "UtilTest",
     "ReadTest",
     "WZipTest",
-    "LocalFileHeaderTest"
+    "LocalFileHeaderTest",
 ]

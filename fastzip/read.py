@@ -70,6 +70,7 @@ class RZipStream(RZipBase):
             if callback is None or callback(lfh):
                 yield (lfh, buf, buf2)
 
+
 if __name__ == "__main__":
     z = RZipStream(Path(sys.argv[1]))
     for lfh, buf, buf2 in z.entries():

@@ -1,10 +1,10 @@
+import logging
 import zlib
 from pathlib import Path
-from typing import List, Optional
+from typing import IO, List, Optional
 
 import click
-
-import glog as log
+from keke import kev, TraceOutput
 
 from fastzip.algo import find_compressor_cls
 from fastzip.algo._base import BaseCompressor
@@ -12,6 +12,7 @@ from fastzip.chooser import CompressionChooser
 from fastzip.read import RZipStream
 from fastzip.write import WZip
 
+log = logging.getLogger(__name__)
 
 # TODO this should go in some central place, but also be able to register other
 # (de)compressors like you can with a CompressionChooser rules.
@@ -97,7 +98,9 @@ def compress(
 @click.option("--verbose", "-v", help="Verbose log level", count=True)
 @click.option("--output", "-o", help="Output zip name", metavar="ZIP")
 @click.option("--dest", "-d", help="Dest dir", metavar="DIR")
-@click.option("--trace", help="Write chrome trace to", metavar="FILE")
+@click.option(
+    "--trace", help="Write trace-events to", metavar="FILE", type=click.File(mode="w")
+)
 @click.option("-t", "verb", flag_value="test")
 @click.option("-e", "verb", flag_value="extract")
 @click.option("-c", "verb", flag_value="compress")
@@ -107,29 +110,34 @@ def main(
     verbose: int,
     output: Optional[str],
     dest: Optional[str],
-    trace: Optional[str],
+    trace: "Optional[IO[str]]",
     verb: Optional[str],
     files: List[str],
 ) -> int:
+    # TODO better format ala glog
     if verbose == 0:
-        log.setLevel("WARNING")
+        logging.basicConfig(level=logging.WARNING)
     elif verbose == 1:
-        log.setLevel("INFO")
-    elif verbose == 2:
-        log.setLevel("DEBUG")
+        logging.basicConfig(level=logging.INFO)
+    elif verbose >= 2:
+        logging.basicConfig(level=logging.DEBUG)
 
-    if verb == "test":
-        assert len(files) == 1
-        return verify(files[0])
-    elif verb == "extract":
-        assert len(files) == 1
-        assert dest is not None
-        return extract(files[0], dest)
-    elif verb == "compress":
-        assert output is not None
-        return compress(output, files, algo)
-    else:
-        raise NotImplementedError(f"Verb {verb}")
+    with TraceOutput(file=trace):
+        if verb == "test":
+            assert len(files) == 1
+            with kev("test", __name__):
+                return verify(files[0])
+        elif verb == "extract":
+            assert len(files) == 1
+            assert dest is not None
+            with kev("extract", __name__):
+                return extract(files[0], dest)
+        elif verb == "compress":
+            assert output is not None
+            with kev("compress", __name__, algo=algo):
+                return compress(output, files, algo)
+        else:
+            raise NotImplementedError(f"Verb {verb}")
 
 
 if __name__ == "__main__":

@@ -3,8 +3,6 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence, Union
 
-import pywildcard
-
 from .algo import find_compressor_cls
 from .types import LocalFileHeader
 
@@ -52,6 +50,8 @@ def op_fnmatch(pat: str) -> Callable[[str], bool]:
     >>> op_fnmatch("**/*.txt")("a/b/c.txt")
     True
     """
+    import pywildcard
+
     return op_regex_match(pywildcard.translate(pat))
 
 
