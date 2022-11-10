@@ -1,5 +1,6 @@
 import concurrent.futures
 import io
+import os
 import unittest
 
 from fastzip.algo import find_compressor_cls
@@ -29,3 +30,31 @@ class LookupRoundtripTest(unittest.TestCase):
 
     def test_zstd(self) -> None:
         self._test("zstd")
+
+
+class WrappedFileTest(unittest.TestCase):
+    def test_stat(self):
+        with open(__file__, "rb") as f:
+            w = WrappedFile(f)
+            expected_size = os.stat(__file__).st_size
+            # Twice on purpose; second uses fast path
+            self.assertEqual(expected_size, w.stat().st_size)
+            self.assertEqual(expected_size, w.stat().st_size)
+            self.assertEqual(expected_size, w.getsize())
+
+    def test_mmap_real_file(self):
+        with open(__file__, "rb") as f:
+            w = WrappedFile(f)
+            expected_size = os.stat(__file__).st_size
+            s, b = w.mmapwrapper()
+            self.assertEqual(expected_size, s)
+            self.assertEqual(b, f.read())
+
+    def test_mmap_bytesio(self):
+        f = io.BytesIO(b"abcdef")
+        w = WrappedFile(f)
+
+        expected_size = 6
+        s, b = w.mmapwrapper()
+        self.assertEqual(expected_size, s)
+        self.assertEqual(b, f.getvalue())

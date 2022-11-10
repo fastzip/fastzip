@@ -1,4 +1,4 @@
-from .algo import LookupRoundtripTest
+from .algo import LookupRoundtripTest, WrappedFileTest
 from .chooser import ChooserTest
 from .read import ReadTest
 from .types import LocalFileHeaderTest
@@ -7,6 +7,7 @@ from .write import WZipTest
 
 __all__ = [
     "LookupRoundtripTest",
+    "WrappedFileTest",
     "ChooserTest",
     "UtilTest",
     "ReadTest",
