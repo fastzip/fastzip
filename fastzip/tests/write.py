@@ -2,7 +2,10 @@ import io
 import os
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+
+from keke import TraceOutput
 
 from fastzip.algo._queue import QueueItem
 from fastzip.algo._wrapfile import WrappedFile
@@ -73,3 +76,12 @@ class WZipTest(unittest.TestCase):
             b"(\xb5/\xfd`,\x00U\x00\x00\x18foo\x01\x00&\xaan\x08",
             b"".join(x.result()[0] for x in item.compressed_data_futures),
         )
+
+    def test_zip64_files(self) -> None:
+        b = io.BytesIO()
+        with TraceOutput(file=open("/tmp/trace.out", "w")):
+            with WZip("foo.zip", fobj=b) as z:
+                for i in range(65537):
+                    p = Path(f"{i}.txt")
+                    z.write(p, p, fobj=io.BytesIO(f"{i}\n".encode("ascii")))
+        zf = zipfile.ZipFile(b)

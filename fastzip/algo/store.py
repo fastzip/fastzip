@@ -2,6 +2,8 @@ from concurrent.futures import Executor, Future
 from typing import Iterable, Optional, Tuple
 from zlib import crc32
 
+from keke import kev
+
 from ._base import BaseCompressor
 from ._wrapfile import WrappedFile
 
@@ -19,8 +21,11 @@ class StoreCompressor(BaseCompressor):
         self, pool: Executor, file_object: WrappedFile
     ) -> Iterable[Future[Tuple[bytes, int, Optional[int]]]]:
         def func() -> Tuple[bytes, int, int]:
-            raw_data = file_object.read()
-            return (raw_data, len(raw_data), crc32(raw_data))
+            with kev("read", __name__):
+                raw_data = file_object.read()
+            with kev("crc", __name__):
+                crc = crc32(raw_data)
+            return (raw_data, len(raw_data), crc)
 
         return [pool.submit(func)]
 
