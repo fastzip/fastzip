@@ -193,10 +193,10 @@ class LocalFileHeader:
         return inst, buf
 
     def replace_extra(self, num: int, value: bytes) -> None:
-        n = []
+        n: List[Tuple[int, bytes]] = []
         for i, v in self.parsed_extra:
             if i != num:
-                n.append(i, v)
+                n.append((i, v))
         n.append((num, value))
         self.parsed_extra = n
 
@@ -244,7 +244,7 @@ class LocalFileHeader:
         ), min_ver
 
 
-CENTRAL_DIRECTORY_FORMAT = "<LHHHHHHLLLHHHHHLl"  # N.b. final lowercase
+CENTRAL_DIRECTORY_FORMAT = "<LHHHHHHLLLHHHHHLL"
 CENTRAL_DIRECTORY_SIGNATURE = 0x02014B50
 
 
@@ -278,7 +278,6 @@ class CentralDirectoryHeader:
     def from_lfh_and_relative_offset(
         cls, lfh: LocalFileHeader, offset: int
     ) -> "CentralDirectoryHeader":
-        assert offset < 0
         return cls(
             signature=CENTRAL_DIRECTORY_SIGNATURE,
             version_made_by=0,  # TODO
@@ -338,4 +337,100 @@ class CentralDirectoryHeader:
             + fn
             + extra
             + comment
+        )
+
+
+ZIP64_EOCD_FORMAT = "<LQHHLLQQQQ"
+ZIP64_EOCD_SIGNATURE = 0x06064B50
+
+
+@dataclass
+class Zip64EOCD:
+    signature: int
+    size: int
+    version_made_by: int
+    version_needed: int
+    disk_num: int
+    disk_with_start: int
+    num_entries_this_disk: int
+    num_entries_total: int
+    size_of_cd: int
+    offset_start: int
+    extensible_data: bytes = b""
+
+    def dump(self) -> bytes:
+        # Spec says to do this, whatev
+        size = struct.calcsize(ZIP64_EOCD_FORMAT) + len(self.extensible_data) - 12
+        return (
+            struct.pack(
+                ZIP64_EOCD_FORMAT,
+                self.signature,
+                size,
+                self.version_made_by,
+                self.version_needed,
+                self.disk_num,
+                self.disk_with_start,
+                self.num_entries_this_disk,
+                self.num_entries_total,
+                self.size_of_cd,
+                self.offset_start,
+            )
+            + self.extensible_data
+        )
+
+
+ZIP64_EOCD_LOCATOR_FORMAT = "<LLQL"
+ZIP64_EOCD_LOCATOR_SIGNATURE = 0x07064B50
+
+
+@dataclass
+class Zip64EOCDLocator:
+    signature: int
+    disk_with_start: int
+    relative_offset: int
+    total_disks: int
+
+    def dump(self) -> bytes:
+        return struct.pack(
+            ZIP64_EOCD_LOCATOR_FORMAT,
+            self.signature,
+            self.disk_with_start,
+            self.relative_offset,
+            self.total_disks,
+        )
+
+
+EOCD_FORMAT = "<LHHHHLLH"
+EOCD_SIGNATURE = 0x06054B50
+
+
+@dataclass
+class EOCD:
+    signature: int
+    disk_num: int
+    disk_with_start: int
+    num_entries_this_disk: int
+    num_entries_total: int
+    size: int
+    offset_start: int
+    comment_length: int
+    comment: str
+
+    def dump(self) -> bytes:
+        # TODO it's not clear how to have a utf-8 comment, and cp437 is not
+        # super useful, so restrict to ascii for now.
+        comment_bytes = self.comment.encode("ascii")
+        return (
+            struct.pack(
+                EOCD_FORMAT,
+                self.signature,
+                self.disk_num,
+                self.disk_with_start,
+                self.num_entries_this_disk,
+                self.num_entries_total,
+                self.size,
+                self.offset_start,
+                len(comment_bytes),
+            )
+            + comment_bytes
         )

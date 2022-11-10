@@ -19,7 +19,7 @@ from .algo._queue import QueueItem
 from .algo._wrapfile import WrappedFile
 from .chooser import CompressionChooser, DEFAULT_CHOOSER
 
-from .types import CentralDirectoryHeader, LocalFileHeader
+from .types import CentralDirectoryHeader, EOCD, EOCD_SIGNATURE, LocalFileHeader
 
 LOG = logging.getLogger(__name__)
 
@@ -42,6 +42,7 @@ class WZip:
         chooser: CompressionChooser = DEFAULT_CHOOSER,
         executor: Optional[ThreadPoolExecutor] = None,
         prefix_data: Optional[bytes] = None,
+        comment: Optional[str] = None,
     ):
         self._filename = filename
         if fobj is not None:
@@ -60,6 +61,8 @@ class WZip:
 
         if prefix_data:
             self._fobj.write(prefix_data)
+
+        self.comment = comment
 
         self._central_directory = []
         self._central_directory_min_ver = 0
@@ -138,13 +141,27 @@ class WZip:
             # print("POS", pos, "ABS_OFFSET", abs_offset)
             cdh = CentralDirectoryHeader.from_lfh_and_relative_offset(
                 lfh,
-                abs_offset - pos,
+                abs_offset,
             )
             data = cdh.dump()
             self._fobj.write(data)
             pos += len(data)
 
-        LOG.warning("TODO write EOCD")
+        central_directory_size = pos - first_pos
+
+        # TODO this will raise for zip64, I think
+        e = EOCD(
+            EOCD_SIGNATURE,
+            0,
+            0,
+            len(self._central_directory),
+            len(self._central_directory),
+            central_directory_size,
+            first_pos,
+            0,  # Will get replaced
+            self.comment or "",
+        )
+        self._fobj.write(e.dump())
 
     def _consumer(self) -> None:
         while True:

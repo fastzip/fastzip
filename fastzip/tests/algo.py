@@ -33,7 +33,7 @@ class LookupRoundtripTest(unittest.TestCase):
 
 
 class WrappedFileTest(unittest.TestCase):
-    def test_stat(self):
+    def test_stat(self) -> None:
         with open(__file__, "rb") as f:
             w = WrappedFile(f)
             expected_size = os.stat(__file__).st_size
@@ -42,7 +42,7 @@ class WrappedFileTest(unittest.TestCase):
             self.assertEqual(expected_size, w.stat().st_size)
             self.assertEqual(expected_size, w.getsize())
 
-    def test_mmap_real_file(self):
+    def test_mmap_real_file(self) -> None:
         with open(__file__, "rb") as f:
             w = WrappedFile(f)
             expected_size = os.stat(__file__).st_size
@@ -50,7 +50,7 @@ class WrappedFileTest(unittest.TestCase):
             self.assertEqual(expected_size, s)
             self.assertEqual(b, f.read())
 
-    def test_mmap_bytesio(self):
+    def test_mmap_bytesio(self) -> None:
         f = io.BytesIO(b"abcdef")
         w = WrappedFile(f)
 
