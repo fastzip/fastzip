@@ -31,16 +31,19 @@ class DeflateCompressor(BaseCompressor):
         self, pool: Executor, file_object: WrappedFile
     ) -> Sequence[Future[Tuple[bytes, int, Optional[int]]]]:
         # TODO: Size could be passed in instead
-        size = file_object.getsize()
+        with kev("getsize", __name__):
+            size = file_object.getsize()
 
-        if size == 0:
-            block_starts = [0]
-        else:
-            block_starts = list(range(0, size, THREAD_BLOCK_SIZE))
+        with kev("block_starts", __name__):
+            if size == 0:
+                block_starts = [0]
+            else:
+                block_starts = list(range(0, size, THREAD_BLOCK_SIZE))
 
         # DEFLATE streams can be concatenated, as long as a Z_FINISH block is
         # not issued too early.
-        _, m = file_object.mmapwrapper()
+        with kev("mmapwrapper", __name__, len=size):
+            _, m = file_object.mmapwrapper()
         with kev("pool.submit", __name__):
             return [
                 pool.submit(

@@ -9,13 +9,17 @@ class WrappedFile:
     def __init__(self, fo: IO[bytes]) -> None:
         self.fo = fo
         self._mmap: Optional[mmap.mmap] = None
+        self._stat: Optional[os.stat_result] = None
 
     def stat(self) -> os.stat_result:
+        if self._stat is not None:
+            return self._stat
+
         try:
-            return os.fstat(self.fo.fileno())
+            st = os.fstat(self.fo.fileno())
         except (TypeError, AttributeError, io.UnsupportedOperation):
             assert isinstance(self.fo, io.BytesIO)
-            return os.stat_result(
+            st = os.stat_result(
                 (
                     0o644,  # mode
                     0,  # ino
@@ -29,17 +33,14 @@ class WrappedFile:
                     0,  # ctime
                 )
             )
+        self._stat = st
+        return st
 
     def read(self, size: int = -1) -> bytes:
         return self.fo.read(size)
 
     def getsize(self) -> int:
-        # TODO consider specialcasing BytesIO here as well and calling fstat
-        # otherwise
-        self.fo.seek(0, os.SEEK_END)
-        v = self.fo.tell()
-        self.fo.seek(0, os.SEEK_SET)
-        return v
+        return self.stat().st_size
 
     def mmapwrapper(self) -> Tuple[int, memoryview]:
         try:
