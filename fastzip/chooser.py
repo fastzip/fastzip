@@ -113,6 +113,6 @@ DEFAULT_CHOOSER = CompressionChooser(
         # DEFLATE will grow small files -- the smallest stream for a single
         # repeating character is at least 11 bytes regardless of length.
         Rule("usize", operator.lt, 12, "store"),
-        Rule("filename", op_fnmatch("*.zip"), None, "store"),
+        Rule("filename", op_regex_match(r"\.zip$"), None, "store"),
     ],
 )
