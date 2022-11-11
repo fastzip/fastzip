@@ -73,13 +73,16 @@ def compress(
             z._chooser = CompressionChooser(default=force_method)
 
         for m in members:
+            with kev("is_dir"):
+                is_dir = Path(m).is_dir()
             try:
                 if m.startswith("+"):
                     # Merge in another zip
-                    zi = RZipStream(Path(m[1:]))
-                    for lfh, header_data, data in zi.entries():
-                        z.enqueue_precompressed(lfh, b"", data)
-                elif Path(m).is_dir():
+                    with kev("+merge"):
+                        zi = RZipStream(Path(m[1:]))
+                        for lfh, header_data, data in zi.entries():
+                            z.enqueue_precompressed(lfh, b"", data)
+                elif is_dir:
                     # not supported yet, oops
                     rc |= 8
                 else:
