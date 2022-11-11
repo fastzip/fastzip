@@ -1,6 +1,6 @@
 import zlib
 from concurrent.futures import Executor, Future
-from typing import Iterable, Optional, Tuple, Union
+from typing import Optional, Sequence, Tuple, Union
 
 from keke import kev
 
@@ -29,7 +29,7 @@ class DeflateCompressor(BaseCompressor):
 
     def compress_to_futures(
         self, pool: Executor, file_object: WrappedFile
-    ) -> Iterable[Future[Tuple[bytes, int, Optional[int]]]]:
+    ) -> Sequence[Future[Tuple[bytes, int, Optional[int]]]]:
         # TODO: Size could be passed in instead
         size = file_object.getsize()
 

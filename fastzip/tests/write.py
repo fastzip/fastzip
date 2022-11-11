@@ -80,8 +80,9 @@ class WZipTest(unittest.TestCase):
     def test_zip64_files(self) -> None:
         b = io.BytesIO()
         with TraceOutput(file=open("/tmp/trace.out", "w")):
-            with WZip("foo.zip", fobj=b) as z:
+            with WZip(Path("foo.zip"), fobj=b) as z:
                 for i in range(65537):
                     p = Path(f"{i}.txt")
                     z.write(p, p, fobj=io.BytesIO(f"{i}\n".encode("ascii")))
         zf = zipfile.ZipFile(b)
+        self.assertEqual(65537, len(zf.namelist()))

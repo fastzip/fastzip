@@ -1,6 +1,6 @@
 from concurrent.futures import Executor, Future
 
-from typing import Dict, Iterable, Optional, Tuple, TYPE_CHECKING
+from typing import Dict, Optional, Sequence, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ._wrapfile import WrappedFile
@@ -21,7 +21,7 @@ class BaseCompressor:
 
     def compress_to_futures(
         self, pool: Executor, file_object: "WrappedFile"
-    ) -> Iterable[Future[Tuple[bytes, int, Optional[int]]]]:
+    ) -> Sequence[Future[Tuple[bytes, int, Optional[int]]]]:
         """
         Compress the given data, presumably in parallel.
 

@@ -247,7 +247,7 @@ class WZip:
                 with kev("_consumer_many"):
                     self._consumer_many(item)
 
-    def _consumer_single(self, item):
+    def _consumer_single(self, item: QueueItem) -> None:
         try:
             (future_data, future_size, future_crc) = item.compressed_data_futures[
                 0
@@ -279,7 +279,7 @@ class WZip:
             self._fobj.write(new_lfh)
             self._fobj.write(future_data)
 
-    def _consumer_many(self, item):
+    def _consumer_many(self, item: QueueItem) -> None:
         t0 = time.time()
         pos = self._fobj.tell()
         running_crc = None

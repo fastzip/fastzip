@@ -2,7 +2,7 @@ import io
 import logging
 from concurrent.futures import Executor, Future
 from threading import Condition
-from typing import Iterable, Optional, Tuple
+from typing import Optional, Sequence, Tuple
 from zlib import crc32
 
 import zstandard
@@ -57,7 +57,7 @@ class ZstdCompressor(BaseCompressor):
 
     def compress_to_futures(
         self, pool: Executor, file_object: WrappedFile
-    ) -> Iterable[Future[Tuple[bytes, int, Optional[int]]]]:
+    ) -> Sequence[Future[Tuple[bytes, int, Optional[int]]]]:
         size = file_object.getsize()
         if size < ZSTD_SINGLE_THRESHOLD:
 
