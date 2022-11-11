@@ -4,6 +4,7 @@ import os
 import time
 from typing import Any, IO, Optional, Tuple
 
+from keke import kev
 
 class WrappedFile:
     def __init__(self, fo: IO[bytes]) -> None:
@@ -51,14 +52,19 @@ class WrappedFile:
             buf = self.fo.getbuffer()
             return len(buf), buf
         else:
-            length = self.getsize()
+            with kev("getsize"):
+                length = self.getsize()
 
             if length == 0:
                 # We can't make a zero-length mapping on Windows, but it's pretty
                 # useless to make one anywhere.
                 return length, memoryview(b"")
-            self._mmap = mmap.mmap(fileno, length, mmap.MAP_PRIVATE)
-            return length, memoryview(self._mmap)
+            elif length <= 8192:
+                with kev("read"):
+                    return length, memoryview(self.fo.read(length))
+            with kev("mmap"):
+                self._mmap = mmap.mmap(fileno, length, mmap.MAP_PRIVATE)
+                return length, memoryview(self._mmap)
 
     def __enter__(self) -> "WrappedFile":
         return self
