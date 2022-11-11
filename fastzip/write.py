@@ -106,6 +106,13 @@ class WZip:
     def _shutdown(self) -> None:
         self._queue.put(SHUTDOWN_SENTINEL)
 
+    def rwrite(self, local_path: Path) -> None:
+        try:
+            self.write(local_path)
+        except IsADirectoryError:
+            for p in local_path.iterdir():
+                self.rwrite(p)
+
     def write(
         self,
         local_path: Path,
