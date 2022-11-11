@@ -121,7 +121,9 @@ def main(
     elif verbose >= 2:
         logging.basicConfig(level=logging.DEBUG)
 
-    with TraceOutput(file=trace):
+    with TraceOutput(
+        file=trace, thread_sortkeys={"MainThread": -1, "Compress": 2, "IO": 3}
+    ):
         if verb == "test":
             assert len(files) == 1
             with kev("test", __name__):

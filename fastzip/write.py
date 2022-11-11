@@ -11,7 +11,7 @@ from pathlib import Path
 from queue import Queue
 from typing import Any, Dict, IO, List, Optional, Tuple, Union
 
-from keke import kev
+from keke import kcount, kev
 
 from ._crc32_combine import crc32_combine
 
@@ -67,17 +67,26 @@ class WZip:
             self._fobj = open(filename, "xb")  # Do not allow overwriting
             self._fobj_provided = False
         self._threads: int = threads if threads is not None else os.cpu_count()  # type: ignore
-        self._queue: Queue[Union[QueueItem, _Sentinel]] = Queue(self._threads)
+
+        # roughly the number of files that it may open; this could be more
+        # explicitly configurable.
+        self._queue: Queue[Union[QueueItem, _Sentinel]] = Queue(400)
         self._executor = (
             executor
             if executor is not None
-            else ThreadPoolExecutor(max_workers=self._threads)
+            else ThreadPoolExecutor(
+                max_workers=self._threads, thread_name_prefix="Compress"
+            )
         )
+        self._io_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="IO")
+
         self._chooser = chooser
         self._cache: Dict[str, BaseCompressor] = {}
 
+        self._bytes_written = 0
         if prefix_data:
             self._fobj.write(prefix_data)
+            self._bytes_written += len(prefix_data)
 
         self.comment = comment
 
@@ -85,6 +94,9 @@ class WZip:
         self._central_directory_min_ver = 0
         self._consumer_thread = threading.Thread(target=self._consumer)
         self._consumer_thread.start()
+        self._done = False
+        self._stats_thread = threading.Thread(target=self._stats)
+        self._stats_thread.start()
 
     def __enter__(self) -> "WZip":
         return self
@@ -99,9 +111,43 @@ class WZip:
             self._write_central_dir()
         with kev("flush"):
             self._fobj.flush()
+        with kev("io_executor.shutdown"):
+            self._io_executor.shutdown()
         if not self._fobj_provided:
             with kev("close"):
                 self._fobj.close()
+        self._done = True
+        self._stats_thread.join()
+
+    def _stats(self):
+        prev_ts = None
+        prev_process_time = None
+        prev_bytes_written = None
+        while not self._done:
+            kcount("queue", self._queue.qsize())
+            kcount("futures", self._executor._work_queue.qsize())
+            kcount("io_futures", self._io_executor._work_queue.qsize())
+
+            ts = time.time()
+            process_time = time.process_time()
+            bytes_written = self._bytes_written
+            if prev_ts is not None:
+                kcount(
+                    "proc_cpu_pct",
+                    100 * (process_time - prev_process_time) / (ts - prev_ts),
+                )
+                kcount(
+                    "kB_written_per_sec",
+                    (bytes_written - prev_bytes_written) / (ts - prev_ts) / 1000,
+                )
+            prev_ts = ts
+            prev_process_time = process_time
+            prev_bytes_written = bytes_written
+
+            # TODO linux-only
+            kcount("fds", len(os.listdir("/proc/self/fd")))
+
+            time.sleep(0.01)
 
     def _shutdown(self) -> None:
         self._queue.put(SHUTDOWN_SENTINEL)
@@ -185,6 +231,7 @@ class WZip:
             )
             data = cdh.dump()
             self._fobj.write(data)
+            self._bytes_written += len(data)
             pos += len(data)
 
         central_directory_size = pos - first_pos
@@ -215,7 +262,9 @@ class WZip:
                 e64_pos,
                 1,
             )
-            self._fobj.write(l64.dump())
+            data = l64.dump()
+            self._fobj.write(data)
+            self._bytes_written += len(data)
 
             if num_entries > MAX_UINT16:
                 num_entries = MAX_UINT16
@@ -235,7 +284,9 @@ class WZip:
             0,  # Will get replaced
             self.comment or "",
         )
-        self._fobj.write(e.dump())
+        data = e.dump()
+        self._fobj.write(data)
+        self._bytes_written += len(data)
 
     def _consumer(self) -> None:
         while True:
@@ -254,19 +305,23 @@ class WZip:
                 with kev("_consumer_many"):
                     self._consumer_many(item)
 
+    def _exit_stack(self, exit_stack: ExitStack) -> None:
+        with kev("exit_stack"):
+            if exit_stack:
+                exit_stack.close()
+
     def _consumer_single(self, item: QueueItem) -> None:
         try:
             (future_data, future_size, future_crc) = item.compressed_data_futures[
                 0
             ].result()
         except Exception as e:
+            # TODO this leakds a file budget
             self._exc = e
             traceback.print_exc()
             return
 
-        with kev("exit_stack"):
-            if item.exit_stack:
-                item.exit_stack.close()
+        self._io_executor.submit(self._exit_stack, item.exit_stack)
 
         with kev("lfh.replace"):
             lfh = replace(item.partial_lfh, csize=len(future_data))
@@ -284,7 +339,9 @@ class WZip:
             )
         with kev("write"):
             self._fobj.write(new_lfh)
+            self._bytes_written += len(new_lfh)
             self._fobj.write(future_data)
+            self._bytes_written += len(future_data)
 
     def _consumer_many(self, item: QueueItem) -> None:
         t0 = time.time()
@@ -301,21 +358,26 @@ class WZip:
             try:
                 (future_data, future_size, future_crc) = f.result()
             except Exception as e:
+                # TODO this leaks a file budget
                 self._exc = e
                 traceback.print_exc()
                 return
 
-            if future_data:
-                self._fobj.write(future_data)
-                running_size += len(future_data)
-            if future_crc is not None:
-                if running_crc is None:
-                    running_crc = future_crc
-                else:
-                    running_crc = crc32_combine(running_crc, future_crc, future_size)
+            with kev("write"):
+                if future_data:
+                    self._fobj.write(future_data)
+                    self._bytes_written += len(future_data)
+                    running_size += len(future_data)
+            with kev("crc32_combine"):
+                if future_crc is not None:
+                    if running_crc is None:
+                        running_crc = future_crc
+                    else:
+                        running_crc = crc32_combine(
+                            running_crc, future_crc, future_size
+                        )
 
-        if item.exit_stack:
-            item.exit_stack.close()
+        self._io_executor.submit(self._exit_stack, item.exit_stack)
 
         # assert buf
         lfh = replace(item.partial_lfh, csize=running_size)
@@ -334,6 +396,8 @@ class WZip:
         t = self._fobj.tell()
         self._fobj.seek(pos)
         self._fobj.write(new_lfh)
+        # TODO the seek is probably more costly than the write here :/
+        self._bytes_written += len(new_lfh)
         self._fobj.seek(t)
         t2 = time.time()
         LOG.info(
