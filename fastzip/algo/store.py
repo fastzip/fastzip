@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from concurrent.futures import Executor, Future
 from typing import Optional, Sequence, Tuple, Union
 from zlib import crc32
