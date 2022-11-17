@@ -2,7 +2,7 @@ import io
 import logging
 from concurrent.futures import Executor, Future
 from threading import Condition
-from typing import Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple, Union
 from zlib import crc32
 
 import zstandard
@@ -11,7 +11,6 @@ from keke import kev
 
 from ._base import BaseCompressor, parse_params
 from ._freelist import FactoryFreelist
-from ._wrapfile import WrappedFile
 
 ZSTD_SINGLE_THRESHOLD = 16 * 1024 * 1024
 
@@ -56,9 +55,11 @@ class ZstdCompressor(BaseCompressor):
             return zstandard.ZstdCompressor(compression_params=self._multi_params)
 
     def compress_to_futures(
-        self, pool: Executor, file_object: WrappedFile
+        self,
+        pool: Executor,
+        size: int,
+        mmap_future: Union[memoryview, Future[memoryview]],
     ) -> Sequence[Future[Tuple[bytes, int, Optional[int]]]]:
-        size = file_object.getsize()
         if size < ZSTD_SINGLE_THRESHOLD:
 
             def func() -> Tuple[bytes, int, Optional[int]]:
@@ -66,8 +67,11 @@ class ZstdCompressor(BaseCompressor):
                 with kev("zstd s"):
                     with kev("enter"):
                         obj = self._single_freelist.enter()
-                    with kev("read"):
-                        raw_data = file_object.read()
+                    if isinstance(mmap_future, Future):
+                        with kev("read"):
+                            raw_data = mmap_future.result()
+                    else:
+                        raw_data = mmap_future
                     with kev("compress"):
                         data = obj.compress(raw_data)
                     with kev("leave"):
@@ -93,13 +97,21 @@ class ZstdCompressor(BaseCompressor):
                         compobj = obj.compressobj(size)
                     running_crc = crc32(b"")
 
-                    while chunk := file_object.read(
-                        zstandard.COMPRESSION_RECOMMENDED_INPUT_SIZE
-                    ):
+                    if isinstance(mmap_future, Future):
+                        with kev("read"):
+                            raw_data = mmap_future.result()
+                    else:
+                        raw_data = mmap_future
+
+                    start = 0
+                    while chunk := raw_data[
+                        start : start + zstandard.COMPRESSION_RECOMMENDED_INPUT_SIZE
+                    ]:
                         with kev("compress/write"):
                             buf.write(compobj.compress(chunk))
                         with kev("crc"):
                             running_crc = crc32(chunk, running_crc)
+                        start += len(chunk)
 
                     with kev("flush/write"):
                         buf.write(compobj.flush())

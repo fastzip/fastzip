@@ -1,11 +1,10 @@
 from concurrent.futures import Executor, Future
-from typing import Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple, Union
 from zlib import crc32
 
 from keke import kev
 
 from ._base import BaseCompressor
-from ._wrapfile import WrappedFile
 
 
 class StoreCompressor(BaseCompressor):
@@ -18,11 +17,18 @@ class StoreCompressor(BaseCompressor):
         assert params == ""
 
     def compress_to_futures(
-        self, pool: Executor, file_object: WrappedFile
+        self,
+        pool: Executor,
+        size: int,
+        mmap_future: Union[memoryview, Future[memoryview]],
     ) -> Sequence[Future[Tuple[bytes, int, Optional[int]]]]:
+        # TODO Tuple[Union[bytes, memoryview], int, int]
         def func() -> Tuple[bytes, int, int]:
             with kev("read", __name__):
-                raw_data = file_object.read()
+                if isinstance(mmap_future, Future):
+                    raw_data = mmap_future.result()
+                else:
+                    raw_data = mmap_future
             with kev("crc", __name__):
                 crc = crc32(raw_data)
             return (raw_data, len(raw_data), crc)

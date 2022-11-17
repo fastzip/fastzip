@@ -4,14 +4,14 @@ import os
 import threading
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
-from queue import Queue
-from typing import Any, Dict, IO, List, Optional, Tuple, Union
+from queue import SimpleQueue
+from typing import Any, BinaryIO, Dict, IO, List, Optional, Tuple, Union
 
-from keke import kcount, kev
+from keke import get_tracer, kcount, kev
 
 from ._crc32_combine import crc32_combine
 
@@ -35,6 +35,8 @@ from .types import (
 MAX_UINT16 = 0xFFFF
 MAX_UINT32 = 0xFFFF_FFFF
 
+DEFAULT_IO_THREADS = 4
+DEFAULT_FILE_BUDGET = 200
 
 LOG = logging.getLogger(__name__)
 
@@ -58,19 +60,32 @@ class WZip:
         executor: Optional[ThreadPoolExecutor] = None,
         prefix_data: Optional[bytes] = None,
         comment: Optional[str] = None,
+        io_threads: Optional[int] = None,
+        file_budget: Optional[int] = None,
+        force_zip64: bool = False,
     ):
         self._filename = filename
         if fobj is not None:
             self._fobj = fobj
             self._fobj_provided = True
         else:
-            self._fobj = open(filename, "xb")  # Do not allow overwriting
+            self._fobj = open(
+                filename,
+                "xb",
+                buffering=1024 * 1024,  # XXX Default is ~8KiB
+            )  # Do not allow overwriting
             self._fobj_provided = False
         self._threads: int = threads if threads is not None else os.cpu_count()  # type: ignore
+        _file_budget: int = (
+            file_budget if file_budget is not None else DEFAULT_FILE_BUDGET
+        )
 
-        # roughly the number of files that it may open; this could be more
-        # explicitly configurable.
-        self._queue: Queue[Union[QueueItem, _Sentinel]] = Queue(400)
+        self._file_budget = threading.BoundedSemaphore(_file_budget)
+
+        self._open_queue: SimpleQueue[
+            Union[QueueItem, Future[Tuple[LocalFileHeader, WrappedFile]], _Sentinel]
+        ] = SimpleQueue()
+        self._queue: SimpleQueue[Union[QueueItem, _Sentinel]] = SimpleQueue()
         self._executor = (
             executor
             if executor is not None
@@ -78,7 +93,10 @@ class WZip:
                 max_workers=self._threads, thread_name_prefix="Compress"
             )
         )
-        self._io_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="IO")
+        _io_threads = io_threads if io_threads is not None else DEFAULT_IO_THREADS
+        self._io_executor = ThreadPoolExecutor(
+            max_workers=_io_threads, thread_name_prefix="IO"
+        )
 
         self._chooser = chooser
         self._cache: Dict[str, BaseCompressor] = {}
@@ -92,11 +110,18 @@ class WZip:
 
         self._central_directory = []
         self._central_directory_min_ver = 0
+        self._open_consumer_thread = threading.Thread(target=self._open_consumer)
+        self._open_consumer_thread.start()
         self._consumer_thread = threading.Thread(target=self._consumer)
         self._consumer_thread.start()
         self._done = False
-        self._stats_thread = threading.Thread(target=self._stats)
-        self._stats_thread.start()
+        self._stats_thread: Optional[threading.Thread] = None
+        self._force_zip64 = force_zip64
+        if get_tracer():
+            # This uses about 10% of a core, so don't enable unless we're
+            # actually tracing.
+            self._stats_thread = threading.Thread(target=self._stats)
+            self._stats_thread.start()
 
     def __enter__(self) -> "WZip":
         return self
@@ -105,28 +130,33 @@ class WZip:
         # TODO check for exception in consumer
         with kev("_shutdown", __name__):
             self._shutdown()
+        with kev("_open_consumer_thread.join", __name__):
+            self._open_consumer_thread.join()
         with kev("_consumer_thread.join", __name__):
             self._consumer_thread.join()
-        with kev("_write_central_dir"):
-            self._write_central_dir()
         with kev("flush"):
             self._fobj.flush()
         with kev("io_executor.shutdown"):
             self._io_executor.shutdown()
+        with kev("_write_central_dir"):
+            self._write_central_dir()
         if not self._fobj_provided:
             with kev("close"):
                 self._fobj.close()
         self._done = True
-        self._stats_thread.join()
+        if self._stats_thread:
+            self._stats_thread.join()
 
-    def _stats(self):
+    def _stats(self) -> None:
         prev_ts = None
         prev_process_time = None
         prev_bytes_written = None
         while not self._done:
+            kcount("open_queue", self._open_queue.qsize())
             kcount("queue", self._queue.qsize())
             kcount("futures", self._executor._work_queue.qsize())
             kcount("io_futures", self._io_executor._work_queue.qsize())
+            kcount("file_budget", self._file_budget._value)
 
             ts = time.time()
             process_time = time.process_time()
@@ -150,35 +180,72 @@ class WZip:
             time.sleep(0.01)
 
     def _shutdown(self) -> None:
-        self._queue.put(SHUTDOWN_SENTINEL)
+        self._open_queue.put(SHUTDOWN_SENTINEL)
 
     def rwrite(self, local_path: Path) -> None:
-        try:
-            self.write(local_path)
-        except IsADirectoryError:
+        """
+        Whereas write() only takes files, this can take directories.
+
+        Slightly slower because it has to stat up front, but you also get
+        reasonable exceptions in the main thread.
+        """
+        if local_path.is_dir():
             for p in local_path.iterdir():
                 self.rwrite(p)
+        else:
+            assert os.access(local_path, os.R_OK)
+            self.write(local_path)
+
+    def _write_open(
+        self,
+        fobj: Optional[BinaryIO],
+        local_path: Path,
+        archive_path: Path,
+    ) -> Tuple[LocalFileHeader, WrappedFile]:
+        f: BinaryIO
+        with kev("open", __name__, path=local_path.as_posix()):
+            if fobj is None:
+                f = open(local_path, "rb")
+            else:
+                f = fobj
+
+            wf = WrappedFile(f)
+        with kev("lfh"):
+            lfh = LocalFileHeader.from_wrapped_file(
+                (archive_path if archive_path is not None else local_path),
+                wf,
+            )
+        with kev("mmapwrapper"):
+            wf.mmapwrapper()
+
+        # Every compression method will need to call mmapwrapper, do this
+        # eagerly so it can be handled in parallel while this QueueItem
+        # waits in the queue.
+        # self._io_executor.submit(wf.mmapwrapper)
+        return (lfh, wf)
 
     def write(
         self,
         local_path: Path,
         archive_path: Optional[Path] = None,
         synthetic_mtime: Optional[int] = None,
-        fobj: Optional[IO[bytes]] = None,
+        fobj: Optional[BinaryIO] = None,
     ) -> None:
+        with kev("acquire", "file_budget"):
+            # Acquisition needs to be in order
+            self._file_budget.acquire()
 
-        with kev("open", __name__, path=local_path.as_posix()):
-            if fobj is None:
-                fobj = open(local_path, "rb")
-            wf = WrappedFile(fobj)
-
-        with kev("lfh", __name__):
-            partial_lfh = LocalFileHeader.from_wrapped_file(
-                (archive_path if archive_path is not None else local_path), wf
+        with kev("fut", "open_queue"):
+            # TODO figure out how to display this as an idle stall
+            fut = self._io_executor.submit(
+                self._write_open,
+                fobj,
+                local_path,
+                # TODO this line is duplicated twice, and is a little questionable to begin with.
+                (archive_path if archive_path is not None else local_path),
             )
-
-        # TODO figure out how to display this as an idle stall
-        self.enqueue(partial_lfh, wf)
+        with kev("put", "open_queue"):
+            self._open_queue.put(fut)
 
     def enqueue_precompressed(
         self,
@@ -187,9 +254,14 @@ class WZip:
         compressed_bytes: Union[memoryview, bytes],
     ) -> None:
         # TODO: note the extra_bytes are not currently used; we make the lfh
-        # reconstruct them (unnecessarily)
-        self._queue.put(
-            QueueItem(lfh, [self._executor.submit(identity, compressed_bytes)])
+        # reconstruct them (unnecessarily), as well as funnel this through the
+        # open_queue (to ensure it remains properly ordered).
+        self._open_queue.put(
+            QueueItem(
+                lfh,
+                [self._executor.submit(identity, compressed_bytes)],
+                None,
+            )
         )
 
     def enqueue(self, partial_lfh: LocalFileHeader, file_object: WrappedFile) -> None:
@@ -210,8 +282,12 @@ class WZip:
         exit_stack = ExitStack()
         exit_stack.enter_context(file_object)
 
-        with kev("compress_to_futures", __name__):
-            data_futures = obj.compress_to_futures(self._executor, file_object)
+        with kev("compress_to_futures", __name__, algo=repr(obj)):
+            data_futures = obj.compress_to_futures(
+                self._executor,
+                file_object.stat().st_size,
+                file_object.mmapwrapper()[1],
+            )
 
         # TODO figure out how to display this as idle
         self._queue.put(QueueItem(partial_lfh, data_futures, exit_stack))
@@ -241,6 +317,7 @@ class WZip:
             num_entries > MAX_UINT16
             or central_directory_size > MAX_UINT32
             or first_pos >= MAX_UINT32
+            or self._force_zip64
         ):
             e64_pos = pos
             e64 = Zip64EOCD(
@@ -304,11 +381,13 @@ class WZip:
             else:
                 with kev("_consumer_many"):
                     self._consumer_many(item)
+            # self._queue.task_done()
 
-    def _exit_stack(self, exit_stack: ExitStack) -> None:
+    def _exit_stack(self, exit_stack: Optional[ExitStack]) -> None:
         with kev("exit_stack"):
             if exit_stack:
                 exit_stack.close()
+            self._file_budget.release()
 
     def _consumer_single(self, item: QueueItem) -> None:
         try:
@@ -316,12 +395,10 @@ class WZip:
                 0
             ].result()
         except Exception as e:
-            # TODO this leakds a file budget
+            self._exit_stack(item.exit_stack)
             self._exc = e
             traceback.print_exc()
             return
-
-        self._io_executor.submit(self._exit_stack, item.exit_stack)
 
         with kev("lfh.replace"):
             lfh = replace(item.partial_lfh, csize=len(future_data))
@@ -337,11 +414,17 @@ class WZip:
             self._central_directory_min_ver = max(
                 self._central_directory_min_ver, min_ver
             )
-        with kev("write"):
+        with kev("write", size=len(new_lfh) + len(future_data)):
             self._fobj.write(new_lfh)
             self._bytes_written += len(new_lfh)
             self._fobj.write(future_data)
             self._bytes_written += len(future_data)
+
+        # XXX If there are any refereces lying around, the mmap.close() will
+        # raise, and right now nothing will ever see that exception.
+        item.compressed_data_futures = ()
+        del future_data
+        self._io_executor.submit(self._exit_stack, item.exit_stack)
 
     def _consumer_many(self, item: QueueItem) -> None:
         t0 = time.time()
@@ -358,12 +441,12 @@ class WZip:
             try:
                 (future_data, future_size, future_crc) = f.result()
             except Exception as e:
-                # TODO this leaks a file budget
+                self._exit_stack(item.exit_stack)
                 self._exc = e
                 traceback.print_exc()
                 return
 
-            with kev("write"):
+            with kev("write", size=len(future_data) if future_data is not None else 0):
                 if future_data:
                     self._fobj.write(future_data)
                     self._bytes_written += len(future_data)
@@ -377,6 +460,10 @@ class WZip:
                             running_crc, future_crc, future_size
                         )
 
+        # XXX If there are any refereces lying around, the mmap.close() will
+        # raise, and right now nothing will ever see that exception.
+        item.compressed_data_futures = ()
+        del future_data
         self._io_executor.submit(self._exit_stack, item.exit_stack)
 
         # assert buf
@@ -407,6 +494,26 @@ class WZip:
             t1 - t0,
             t2 - t1,
         )
+
+    def _open_consumer(self) -> None:
+        while True:
+            item = self._open_queue.get()
+            if isinstance(item, _Sentinel):
+                self._queue.put(SHUTDOWN_SENTINEL)
+                break
+            elif isinstance(item, QueueItem):
+                # precompressed data
+                self._queue.put(item)
+            else:
+                with kev(".result", "open_consumer"):
+                    try:
+                        partial_lfh, wf = item.result()
+                    except Exception as e:
+                        self._exc = e
+                        traceback.print_exc()
+                        continue
+
+                self.enqueue(partial_lfh, wf)
 
 
 def identity(

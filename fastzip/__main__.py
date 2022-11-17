@@ -1,7 +1,8 @@
 import logging
+import os
 import zlib
 from pathlib import Path
-from typing import IO, List, Optional
+from typing import Any, IO, List, Optional
 
 import click
 from keke import kev, TraceOutput
@@ -10,7 +11,7 @@ from fastzip.algo import find_compressor_cls
 from fastzip.algo._base import BaseCompressor
 from fastzip.chooser import CompressionChooser
 from fastzip.read import RZipStream
-from fastzip.write import WZip
+from fastzip.write import DEFAULT_FILE_BUDGET, DEFAULT_IO_THREADS, WZip
 
 log = logging.getLogger(__name__)
 
@@ -65,10 +66,10 @@ def extract(filename: str, target_dir: str) -> int:
 
 
 def compress(
-    filename: str, members: List[str], force_method: Optional[str] = None
+    filename: str, members: List[str], force_method: Optional[str] = None, **kwargs: Any
 ) -> int:
     rc = 0
-    with WZip(Path(filename)) as z:
+    with WZip(Path(filename), **kwargs) as z:
         if force_method:
             z._chooser = CompressionChooser(default=force_method)
 
@@ -96,13 +97,34 @@ def compress(
 )
 @click.option("--verbose", "-v", help="Verbose log level", count=True)
 @click.option("--output", "-o", help="Output zip name", metavar="ZIP")
+@click.option("--force", "-f", help="Overwrite output", is_flag=True)
 @click.option("--dest", "-d", help="Dest dir", metavar="DIR")
 @click.option(
     "--trace", help="Write trace-events to", metavar="FILE", type=click.File(mode="w")
 )
-@click.option("-t", "verb", flag_value="test")
-@click.option("-e", "verb", flag_value="extract")
-@click.option("-c", "verb", flag_value="compress")
+@click.option(
+    "--threads",
+    help="Number of compression threads",
+    default=os.cpu_count(),
+    show_default=True,
+)
+@click.option(
+    "--io-threads",
+    help="Number of IO threads",
+    default=DEFAULT_IO_THREADS,
+    show_default=True,
+)
+@click.option(
+    "--file-budget",
+    help="Max number of files kept open, approximately",
+    default=DEFAULT_FILE_BUDGET,
+    show_default=True,
+)
+@click.option("-t", "verb", flag_value="test", help="Test archive 1st positional arg")
+@click.option(
+    "-e", "verb", flag_value="extract", help="Extract archive 1st positional arg"
+)
+@click.option("-c", "verb", flag_value="compress", help="Create archive named by -o")
 @click.argument("files", nargs=-1)
 def main(
     algo: Optional[str],
@@ -110,6 +132,10 @@ def main(
     output: Optional[str],
     dest: Optional[str],
     trace: "Optional[IO[str]]",
+    threads: Optional[int],
+    io_threads: Optional[int],
+    file_budget: Optional[int],
+    force: bool,
     verb: Optional[str],
     files: List[str],
 ) -> int:
@@ -121,6 +147,7 @@ def main(
     elif verbose >= 2:
         logging.basicConfig(level=logging.DEBUG)
 
+    # Note that thread_sortkeys is kind of best-effort; trace viewers may not support it.
     with TraceOutput(
         file=trace, thread_sortkeys={"MainThread": -1, "Compress": 2, "IO": 3}
     ):
@@ -135,8 +162,22 @@ def main(
                 return extract(files[0], dest)
         elif verb == "compress":
             assert output is not None
+
+            if force:
+                try:
+                    Path(output).unlink()
+                except Exception as e:
+                    print(e)
+
             with kev("compress", __name__, algo=algo):
-                return compress(output, files, algo)
+                return compress(
+                    output,
+                    files,
+                    algo,
+                    threads=threads,
+                    io_threads=io_threads,
+                    file_budget=file_budget,
+                )
         else:
             raise NotImplementedError(f"Verb {verb}")
 

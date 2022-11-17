@@ -16,7 +16,7 @@ class LookupRoundtripTest(unittest.TestCase):
         buf = io.BytesIO()
         with concurrent.futures.ThreadPoolExecutor() as e:
             for f in inst.compress_to_futures(
-                pool=e, file_object=WrappedFile(io.BytesIO(DEMO_DATA))
+                pool=e, size=len(DEMO_DATA), mmap_future=memoryview(DEMO_DATA)
             ):
                 buf.write(f.result()[0])
 
@@ -48,7 +48,8 @@ class WrappedFileTest(unittest.TestCase):
             expected_size = os.stat(__file__).st_size
             s, b = w.mmapwrapper()
             self.assertEqual(expected_size, s)
-            self.assertEqual(b, f.read())
+            f.seek(0)
+            self.assertEqual(bytes(b), f.read())
 
     def test_mmap_bytesio(self) -> None:
         f = io.BytesIO(b"abcdef")

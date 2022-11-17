@@ -1,8 +1,11 @@
 import os
 import struct
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, List, Optional, Sequence, Tuple, TYPE_CHECKING
+
+from keke import kev
 
 from .util import _readn, _slicen
 
@@ -57,33 +60,42 @@ class LocalFileHeader:
         synthetic_mode: Optional[int] = None,
     ) -> "LocalFileHeader":
 
-        stat = fo.stat()
-        mode = synthetic_mode if synthetic_mode is not None else stat.st_mode
+        with kev("stat", __name__):
+            stat = fo.stat()
+        # mode = synthetic_mode if synthetic_mode is not None else stat.st_mode
         mtime = synthetic_mtime if synthetic_mtime is not None else stat.st_mtime
-        # TODO dos time calculations
-        mode = 0
-        mtime = 0
+        # TODO this loses a little bit of precision, and someday we probably
+        # want to store the higher-resolution unix extra as well.
+        dt = time.localtime(mtime)
+        # These two lines come verbatim from cpython's zipfile.py but are
+        # likely the only way to do this numeric conversion.
+        dosdate = (dt[0] - 1980) << 9 | dt[1] << 5 | dt[2]
+        dostime = dt[3] << 11 | dt[4] << 5 | (dt[5] // 2)
 
         if filename.anchor:
             # N.b. platform-dependent behavior; this will strip drive letters
             # and UNC paths but only on Windows
-            filename = filename.relative_to(filename.anchor)
+            with kev("relative_to", __name__):
+                filename = filename.relative_to(filename.anchor)
 
-        filename_str = filename.as_posix()  # '/' normalized value
-        return cls(
-            signature=LOCAL_FILE_HEADER_SIGNATURE,
-            version_needed=2,
-            flags=(mode & 0o777) << 8,  # TODO assumes not a dir
-            method=0,
-            mtime=mtime,
-            mdate=0,
-            crc32=WILL_BE_REPLACED_VALUE,
-            csize=WILL_BE_REPLACED_VALUE,
-            usize=stat.st_size,
-            filename_length=len(filename_str),
-            extra_length=0,  # TODO unix extra, zip64 extra
-            filename=filename_str,
-        )
+        with kev("as_posix", __name__):
+            filename_str = filename.as_posix()  # '/' normalized value
+
+        with kev("ret", __name__):
+            return cls(
+                signature=LOCAL_FILE_HEADER_SIGNATURE,
+                version_needed=2,
+                flags=0,  # (mode & 0o777) << 8,  # TODO assumes not a dir
+                method=0,
+                mtime=dostime,
+                mdate=dosdate,
+                crc32=WILL_BE_REPLACED_VALUE,
+                csize=WILL_BE_REPLACED_VALUE,
+                usize=stat.st_size,
+                filename_length=len(filename_str),
+                extra_length=0,  # TODO unix extra, zip64 extra
+                filename=filename_str,
+            )
 
     @classmethod
     def _for_testing(cls, usize: int, filename: str) -> "LocalFileHeader":
@@ -302,6 +314,7 @@ class CentralDirectoryHeader:
     # TODO not happy with the name
     def dump(self) -> bytes:
         flags = self.flags
+
         assert self.filename is not None
         try:
             fn = self.filename.encode("ascii")

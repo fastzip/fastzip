@@ -5,8 +5,6 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from keke import TraceOutput
-
 from fastzip.algo._queue import QueueItem
 from fastzip.algo._wrapfile import WrappedFile
 from fastzip.chooser import CompressionChooser
@@ -79,10 +77,10 @@ class WZipTest(unittest.TestCase):
 
     def test_zip64_files(self) -> None:
         b = io.BytesIO()
-        with TraceOutput(file=open("/tmp/trace.out", "w")):
-            with WZip(Path("foo.zip"), fobj=b) as z:
-                for i in range(65537):
-                    p = Path(f"{i}.txt")
-                    z.write(p, p, fobj=io.BytesIO(f"{i}\n".encode("ascii")))
+        with WZip(Path("foo.zip"), fobj=b, force_zip64=True) as z:
+            for i in range(20):
+                p = Path(f"{i}.txt")
+                z.write(p, p, fobj=io.BytesIO(f"{i}\n".encode("ascii")))
         zf = zipfile.ZipFile(b)
-        self.assertEqual(65537, len(zf.namelist()))
+        # TODO interrogate the zf to make sure it _was_ zip64
+        self.assertEqual(20, len(zf.namelist()))

@@ -5,7 +5,6 @@ from typing import Optional, Sequence, Tuple, Union
 from keke import kev
 
 from ._base import BaseCompressor, parse_params
-from ._wrapfile import WrappedFile
 
 THREAD_BLOCK_SIZE = 1024 * 1024  # 1MiB
 
@@ -28,12 +27,11 @@ class DeflateCompressor(BaseCompressor):
                 raise ValueError(f"Unknown param {k!r} for {self.__class__.__name__}")
 
     def compress_to_futures(
-        self, pool: Executor, file_object: WrappedFile
+        self,
+        pool: Executor,
+        size: int,
+        mmap_future: Union[memoryview, Future[memoryview]],
     ) -> Sequence[Future[Tuple[bytes, int, Optional[int]]]]:
-        # TODO: Size could be passed in instead
-        with kev("getsize", __name__):
-            size = file_object.getsize()
-
         with kev("block_starts", __name__):
             if size == 0:
                 block_starts = [0]
@@ -42,22 +40,33 @@ class DeflateCompressor(BaseCompressor):
 
         # DEFLATE streams can be concatenated, as long as a Z_FINISH block is
         # not issued too early.
-        with kev("mmapwrapper", __name__, len=size):
-            _, m = file_object.mmapwrapper()
+
         with kev("pool.submit", __name__):
             return [
                 pool.submit(
                     self._compress_block,
                     # TODO test with .mmapwrapper()
-                    m[start : min(size, start + THREAD_BLOCK_SIZE)],
+                    mmap_future,
+                    start,
+                    min(size, start + THREAD_BLOCK_SIZE),
                     start == block_starts[-1],
                 )
                 for start in block_starts
             ]
 
     def _compress_block(
-        self, data: Union[bytes, memoryview], final: bool
+        self,
+        data: Union[bytes, memoryview, Future[memoryview]],
+        a: int,
+        b: int,
+        final: bool,
     ) -> Tuple[bytes, int, int]:
+        if isinstance(data, Future):
+            with kev(".result"):
+                data = data.result()
+
+        data = data[a:b]
+
         with kev("compressobj", __name__):
             # zlib compressobj are incredibly cheap, we'll just create a new one
             # each time and let it go out of scope.

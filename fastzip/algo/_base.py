@@ -1,9 +1,6 @@
 from concurrent.futures import Executor, Future
 
-from typing import Dict, Optional, Sequence, Tuple, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from ._wrapfile import WrappedFile
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 
 class BaseCompressor:
@@ -20,18 +17,21 @@ class BaseCompressor:
         self._threads = threads
 
     def compress_to_futures(
-        self, pool: Executor, file_object: "WrappedFile"
+        self,
+        pool: Executor,
+        size: int,
+        mmap_future: Union[memoryview, Future[memoryview]],
     ) -> Sequence[Future[Tuple[bytes, int, Optional[int]]]]:
         """
         Compress the given data, presumably in parallel.
 
         This method MUST be threadsafe, and the futures MUST be assumed to run
-        concurrently as well.  Use a mutex here or in whatever the future runs
-        to ensure this.
+        concurrently as well.  Use a mutex here or in whatever the returned
+        future runs to ensure this.
 
-        The futures are (compressed_chunk, raw_length, [raw_chunk_crc32]).  The
-        consumer of these needs to merge crc32s but can just concatenate
-        compressed_chunk.
+        The returned futures are (compressed_chunk, raw_length,
+        [raw_chunk_crc32]).  The consumer of these needs to merge crc32s but can
+        just concatenate compressed_chunk.
         """
         raise NotImplementedError
 
