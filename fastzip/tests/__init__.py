@@ -1,5 +1,6 @@
 from .algo import LookupRoundtripTest, WrappedFileTest
 from .chooser import ChooserTest
+from .crc32 import Crc32Test
 from .read import ReadTest
 from .types import LocalFileHeaderTest
 from .util import UtilTest
@@ -9,6 +10,7 @@ __all__ = [
     "LookupRoundtripTest",
     "WrappedFileTest",
     "ChooserTest",
+    "Crc32Test",
     "UtilTest",
     "ReadTest",
     "WZipTest",

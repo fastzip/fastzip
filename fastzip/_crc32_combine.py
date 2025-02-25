@@ -1,5 +1,6 @@
 from ctypes import c_ulong, CDLL
 from ctypes.util import find_library
+from typing import List
 
 
 def _crc32_combine_pure(crc1: int, crc2: int, len2: int) -> int:
@@ -15,10 +16,10 @@ def _crc32_combine_pure(crc1: int, crc2: int, len2: int) -> int:
 
     # put operator for one zero bit in odd
     # CRC-32 polynomial, 1, 2, 4, 8, ..., 1073741824
-    odd = [0xedb88320] + [1 << i for i in range(0, 31)]
+    odd = [0xEDB88320] + [1 << i for i in range(0, 31)]
     even = [0] * 32
 
-    def matrix_times(matrix, vector):
+    def matrix_times(matrix: List[int], vector: int) -> int:
         number_sum = 0
         matrix_index = 0
         while vector != 0:
@@ -58,13 +59,12 @@ def _crc32_combine_pure(crc1: int, crc2: int, len2: int) -> int:
     crc1 ^= crc2
     return crc1
 
-# TODO I suspect this needs to be different on Windows
+
 _zlib = find_library("z")
 if _zlib:
     _zlib_ctypes = CDLL(_zlib)
     _zlib_ctypes.crc32_combine.argtypes = [c_ulong, c_ulong, c_ulong]
     _zlib_ctypes.crc32_combine.restype = c_ulong
-
 
     def crc32_combine(crc1: int, crc2: int, len2: int) -> int:
         """
@@ -76,4 +76,7 @@ if _zlib:
 
 else:
     # use fallback implementation
+    import warnings
+
+    warnings.warn("unable to use crc32_combine from zlib, using slower fallback")
     crc32_combine = _crc32_combine_pure
