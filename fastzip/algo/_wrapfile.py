@@ -92,9 +92,7 @@ class WrappedFile:
                 with kev("read", __name__, size=length):
                     return length, memoryview(self.fo.read(length))
             with kev("mmap", __name__, size=length):
-                self._mmap = mmap.mmap(
-                    fileno, length, mmap.MAP_SHARED, prot=mmap.PROT_READ
-                )
+                self._mmap = mmap.mmap(fileno, length, access=mmap.ACCESS_READ)
                 return length, memoryview(self._mmap)
 
     def __enter__(self) -> "WrappedFile":
