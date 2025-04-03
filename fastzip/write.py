@@ -164,13 +164,15 @@ class WZip:
             process_time = time.process_time()
             bytes_written = self._bytes_written
             if prev_ts is not None:
+                assert prev_process_time is not None
+                assert prev_bytes_written is not None
                 kcount(
                     "proc_cpu_pct",
-                    100 * (process_time - prev_process_time) / (ts - prev_ts),
+                    int(100 * (process_time - prev_process_time) / (ts - prev_ts)),
                 )
                 kcount(
                     "kB_written_per_sec",
-                    (bytes_written - prev_bytes_written) / (ts - prev_ts) / 1000,
+                    int((bytes_written - prev_bytes_written) / (ts - prev_ts) / 1000),
                 )
             prev_ts = ts
             prev_process_time = process_time
@@ -529,7 +531,7 @@ def binary_io_check(f: object) -> bool:
         f = f.fo
 
     if hasattr(f, "mode"):
-        return "b" in f.mode  # type: ignore
+        return "b" in f.mode
     elif isinstance(f, io.BytesIO):
         return True
     else:
