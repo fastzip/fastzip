@@ -45,9 +45,11 @@ Calculated actual CD offset_start 4297326401
    some tools (Archive Utility, and WinRAR at least) read until the end of the
    deflate stream and don't validate the resulting size :/
 
-## Storytime
+4. Not demonstrated above, more than 65535 files causes the truncated count to
+   be written to the EOCD.  All of the directory entries get written, but with
+   the wrong count, most decompressors won't see them.
 
-I had to implement support for data descriptors (`flags=8`) in order to 
+## Storytime
 
 What would a correctly-zipped version of this look like?
 
@@ -71,7 +73,7 @@ Zip64EOCD(..., size=44, version_made_by=798, ..., offset_start=4296712046)
 Notably, there's a zip64 EOCD as well as the zip64 extra on the central
 directory entry itself (the extra number 1).  That extra is the only way to
 store sizes >= 4GB (and if you're extremely paranoid about decompressors mixing
-up signed and unsighed, >= 2GB).
+up signed and unsigned, >= 2GB).
 
 ## But what about "compatibility code"
 
@@ -188,13 +190,44 @@ def fix_file_header_offsets(zf: zipfile.ZipFile, path: os.PathLike[str]) -> None
             end = info.header_offset
 ```
 
-<!--
-Incidentally, `zipimport` doesn't share its code with `zipfile` and didn't
-support zip64 until 2024 when [My PR
-94146](https://github.com/python/cpython/pull/94146) was merged, and is
-available in Python 3.13.
--->
+## But what about #4
 
+```
+mkdir x
+(cd x; seq 65537 | xargs touch)
+ditto -k -c x x.zip
+```
+
+This one is also readily reproducible, but requires more invasive workarounds
+in `zipfile` because this is part of the initial info reading, and the EOCD
+items are not kept around.
+
+The easiest workaround is to duplicate stdlib's `zipfile` as `zipfile2` or
+something, and modify the following loop:
+
+```
+while total < size_cd:
+  centdir = fp.read(sizeCentralDir)
+  if len(centdir) != sizeCentralDir:
+  ...
+```
+
+to be more like:
+
+```
+while True:
+  centdir = fp.read(sizeCentralDir)
+  if not centdir.startswith(b"PK\x01\x02"):
+    break
+  if len(centdir) != sizeCentralDir:
+  ...
+```
+Incidentally, zip64 due to file count is
+the first time I ran up against decompressors not supporting zip64, which was
+in Python's *other* implementation, `zipimport`.  That's now fixed in 3.13 with
+my [PR 94146](https://github.com/python/cpython/pull/94146) was merged.  It
+uses the same method and raises a good error when the detected count doesn't
+match the header count.
 
 ## Conclusion
 
@@ -202,8 +235,9 @@ Now that I know the root cause and have better words to search for, basically
 this same bug has been known in the Archive Utility and `ditto` since 
 "quite some time" before Dec 2009.
 
-It appears to be fixed in Archive Utility in Sequoia 15.3.2, but still exists
-in `ditto` with the current version of developer tools.
+It appears to be fixed in Archive Utility, and Finder's "right-click, Compress"
+in Sequoia 15.3.2, but still exists in `ditto` with the current version of
+developer tools.
 
 * https://sourceforge.net/p/sevenzip/bugs/2038/ (2017)
   * https://sourceforge.net/p/sevenzip/bugs/1474/ (2015)
