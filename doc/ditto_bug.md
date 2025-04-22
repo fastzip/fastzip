@@ -132,6 +132,11 @@ longer than most headers are ever going to be.  That piece is a little hacky,
 but far simpler than the multiple iterations (and special-casing the last file)
 necessary to set the precisely correct value (see below).
 
+We also do this operation in the natural list order (rather than sorting by
+`header_offset` as `zipfile` does when writing `_end_offset` in the first
+place), under the assumption that local files are in the same order as their
+headers, because we don't have anything better to rely on to find the order.
+
 For members less than 4GB in size, this is probably sufficient to extract them
 by working around issue #2 very efficiently.
 
@@ -248,4 +253,3 @@ developer tools.
   * https://sourceforge.net/p/sevenzip/bugs/1474/ (2015)
   * https://sourceforge.net/p/sevenzip/bugs/1170/ (2010)
     * https://web.archive.org/web/20140331005235/http://www.springyarchiver.com/blog/topic/topic/203 (2009)
-
