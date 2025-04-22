@@ -75,6 +75,11 @@ directory entry itself (the extra number 1).  That extra is the only way to
 store sizes >= 4GB (and if you're extremely paranoid about decompressors mixing
 up signed and unsigned, >= 2GB).
 
+This is also a more typical zip in that it doesn't use "data descriptors"
+(flags=8).  I haven't seen those in a long time (but I guess I don't see a lot
+of Mac-created zips, because they're unnecessarily used by all the Apple
+tools I tried when writing this up).
+
 ## But what about "compatibility code"
 
 First, for the sake of clarity, "relative offsets" are actually relative to the
