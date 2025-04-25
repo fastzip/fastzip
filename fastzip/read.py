@@ -1,8 +1,17 @@
+import os
 import sys
 from pathlib import Path
 from typing import Callable, IO, Iterator, Optional, Tuple
 
-from .types import EndOfLocalFiles, LocalFileHeader
+from .types import (
+    CentralDirectoryHeader,
+    EndOfCentralDirectory,
+    EndOfLocalFiles,
+    EOCD,
+    LocalFileHeader,
+    Zip64EOCD,
+    Zip64EOCDLocator,
+)
 from .util import _readn
 
 
@@ -71,7 +80,89 @@ class RZipStream(RZipBase):
                 yield (lfh, buf, buf2)
 
 
+class RZipCD(RZipBase):
+    """
+    Reads a zip file using the central directoryfrom the beginning.
+
+    Doing so ignores the central directory, but is also much more suitable for
+    streaming.  This class only reads a subset of zips that have no gaps
+    between files, and don't have data descriptors.
+    """
+
+    _fobj: IO[bytes]
+
+    def __init__(
+        self,
+        filename: Path,
+        fobj: Optional[IO[bytes]] = None,
+        max_search: int = 0,
+    ) -> None:
+        self._filename = filename
+        if fobj:
+            # Presumed to be at the correct position
+            self._fobj = fobj
+        else:
+            self._fobj = open(filename, "rb")
+        try:
+            offset = Zip64EOCDLocator.locate(self._fobj)
+            self._fobj.seek(offset)
+            eo = Zip64EOCD.read_from(self._fobj)
+            self._fobj.seek(eo.offset_start)
+            # This should be followed immediately by a valid EOCD
+            # eo2 = EOCD.read_from(self._fobj)
+        except AssertionError:  # not zip64, TODO: should be a better exception
+            offset = EOCD.locate(self._fobj)
+            self._fobj.seek(offset)
+            eo = EOCD.read_from(self._fobj)
+            self._fobj.seek(eo.offset_start)
+            try:
+                CentralDirectoryHeader.read_from(self._fobj)
+            except ValueError:  # TODO: should be a better exception
+                print("Bad CD offset")
+                self._fobj.seek(offset - eo.size)
+                print(offset - eo.size)
+                CentralDirectoryHeader.read_from(self._fobj)  # Raises if it's still bad
+                self._fobj.seek(offset - eo.size)
+            else:
+                self._fobj.seek(eo.offset_start)
+
+        # TODO support max_search, which requires a tee or seeking
+
+    def entries(
+        self, callback: Optional[Callable[[LocalFileHeader], bool]] = None
+    ) -> Iterator[Tuple[CentralDirectoryHeader, bytes, bytes]]:
+        """
+        Yields `(local_file_header, header_data, file_data)` for each entry that
+        `callback(local_file_header)` returns True.
+
+        This isn't an ideal API because it can't be interchanged with
+        RZipStream, and will probably change in the future.
+
+        Only call this function once.
+        """
+
+        while True:
+            # The position really only matters for debugging
+            # pos = self._fobj.tell()
+            try:
+                lfh, buf = CentralDirectoryHeader.read_from(self._fobj)
+                assert lfh.crc32 is not None
+            except EndOfCentralDirectory:
+                break
+
+            # buf2 = _readn(self._fobj, lfh.csize)
+            if callback is None or callback(lfh):
+                yield (lfh, buf, b"")
+
+
 if __name__ == "__main__":
     z = RZipStream(Path(sys.argv[1]))
+    f2 = open(sys.argv[1], "rb")
+
+    prev_offset = 0
+    prev_size = 0
+
+    print("@", z._fobj.tell())
     for lfh, buf, buf2 in z.entries():
         print(lfh)
+        print("@", z._fobj.tell())

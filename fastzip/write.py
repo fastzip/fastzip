@@ -61,7 +61,7 @@ class WZip:
         chooser: CompressionChooser = DEFAULT_CHOOSER,
         executor: Optional[ThreadPoolExecutor] = None,
         prefix_data: Optional[bytes] = None,
-        comment: Optional[str] = None,
+        comment: Optional[bytes] = None,
         io_threads: Optional[int] = None,
         file_budget: Optional[int] = None,
         force_zip64: bool = False,
@@ -300,6 +300,7 @@ class WZip:
         assert self._central_directory
 
         first_pos = self._fobj.tell()
+        print(first_pos)
         pos = first_pos
         for abs_offset, lfh in self._central_directory:
             # print("POS", pos, "ABS_OFFSET", abs_offset)
@@ -361,7 +362,7 @@ class WZip:
             central_directory_size,
             first_pos,
             0,  # Will get replaced
-            self.comment or "",
+            self.comment or b"",
         )
         data = e.dump()
         self._fobj.write(data)
