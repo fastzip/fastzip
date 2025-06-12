@@ -99,9 +99,14 @@ class WrappedFile:
         return self
 
     def __exit__(self, *args: Any) -> None:
-        if self._mmap:
+        # XXX need to dealloc the memoryview in this first, before closing the
+        # mmap that it (might have) come from.  In tests, we only have the
+        # first, not the second.
+        if self._cached_mmap:
             self._cached_mmap = None
+        if self._mmap:
             self._mmap.close()
+
         # XXX this exit being be called in the same executor that the future is
         # from... hopefully the result is already ready, we just need to fetch
         # it.
