@@ -9,6 +9,7 @@ from keke import kev
 from ._base import BaseCompressor, parse_params
 
 THREAD_BLOCK_SIZE = 1024 * 1024  # 1MiB
+DICT_WINDOW = 32768  # wbits=15 is 32K
 
 
 class DeflateCompressor(BaseCompressor):
@@ -67,12 +68,19 @@ class DeflateCompressor(BaseCompressor):
             with kev(".result"):
                 data = data.result()
 
+        # zdict is a compression ratio optimization; it lets us reference the
+        # (uncompressed) data from before the start of this compressobj.  It is
+        # not communicated in any way, this is cooperative trust.
+        zdict = b""
+        if a != 0:
+            zdict = data[a - DICT_WINDOW : a]
+
         data = data[a:b]
 
         with kev("compressobj", __name__):
             # zlib compressobj are incredibly cheap, we'll just create a new one
             # each time and let it go out of scope.
-            obj = zlib.compressobj(self._compresslevel, zlib.DEFLATED, -15)
+            obj = zlib.compressobj(self._compresslevel, zlib.DEFLATED, -15, zdict=zdict)
         with kev("compress", __name__, size=len(data)):
             # TODO benchmark to ensure the + isn't too expensive
             buf: bytes = obj.compress(data)
