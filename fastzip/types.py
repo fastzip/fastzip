@@ -17,6 +17,10 @@ class EndOfLocalFiles(Exception):
     pass
 
 
+class EndOfCentralDirectory(Exception):
+    pass
+
+
 class BadLocalFileSignature(Exception):
     pass
 
@@ -115,7 +119,9 @@ class LocalFileHeader:
         )
 
     @classmethod
-    def read_from(cls, fo: IO[bytes]) -> Tuple["LocalFileHeader", bytes]:
+    def read_from(
+        cls, fo: IO[bytes], csize: Optional[int] = None
+    ) -> Tuple["LocalFileHeader", bytes]:
         """
         Assuming fo is ready to read a valid local file header, reads the object
         and returns `(object, buffer)` while leaving the position ready to read
@@ -144,6 +150,7 @@ class LocalFileHeader:
             fo.seek(-len(buf), os.SEEK_CUR)
             raise EndOfLocalFiles()
         if inst.signature != LOCAL_FILE_HEADER_SIGNATURE:
+            print("".join(["%02x " % i for i in buf]))
             raise ValueError("Invalid signature %0x" % (inst.signature,))
 
         filename_data = _readn(fo, inst.filename_length)
@@ -153,13 +160,6 @@ class LocalFileHeader:
             inst.filename = filename_data.decode("utf-8")  # can raise
         else:
             inst.filename = filename_data.decode("cp437")
-
-        if inst.flags & FLAG_DATA_DESCRIPTOR:
-            # I am not a fan of the complexity and additional validation
-            # required to support this flag; although Python's zipfile.py can
-            # generate such files, I don't see the usefulness and would like to
-            # guarantee that files output by this library will not contain them.
-            raise NotImplementedError("Data descriptor")
 
         if inst.extra_length:
             extra: List[Tuple[int, bytes]] = []
@@ -201,6 +201,31 @@ class LocalFileHeader:
                 raise ValueError("Extra length")
             inst.parsed_extra = tuple(extra)
             buf += extra_data
+
+        if inst.flags & FLAG_DATA_DESCRIPTOR:
+            is_zip64 = any(i == 1 for i, j in inst.parsed_extra)
+            assert csize is not None, "Data descriptors require passing in csize"
+            fo.seek(csize)
+            if is_zip64:
+                data = _readn(fo, 8 * 3)
+                values = [
+                    int.from_bytes(data[n : n + 8], "little")
+                    for n in range(0, len(data), 8)
+                ]
+            else:
+                data = _readn(fo, 4 * 3)
+                values = [
+                    int.from_bytes(data[n : n + 4], "little")
+                    for n in range(0, len(data), 4)
+                ]
+            inst.crc32 = values.pop(0)
+            inst.csize = values.pop(0)
+            inst.usize = values.pop(0)
+            assert not values
+            # TODO buf doesn't include the data descriptor but probably should
+            # include the modified values from it...
+            # I would like to guarantee that files output by this library will
+            # not contain them.
 
         return inst, buf
 
@@ -311,6 +336,68 @@ class CentralDirectoryHeader:
             filename=lfh.filename,  # TODO ordering
         )
 
+    @classmethod
+    def read_from(cls, fo: IO[bytes]) -> Tuple["CentralDirectoryHeader", bytes]:
+        buf = _readn(fo, struct.calcsize(CENTRAL_DIRECTORY_FORMAT))
+        args = struct.unpack(CENTRAL_DIRECTORY_FORMAT, buf)
+        inst = cls(*args)
+        if inst.signature == ZIP64_EOCD_SIGNATURE:
+            # TODO known location to seek?
+            raise EndOfCentralDirectory()
+        if inst.signature != CENTRAL_DIRECTORY_SIGNATURE:
+            raise ValueError("Invalid signature %0x" % (inst.signature,))
+        inst.filename = _readn(fo, inst.filename_length)  # TODO encoding
+        # TODO store these
+        if inst.extra_length:
+            extra: List[Tuple[int, bytes]] = []
+            extra_data = _readn(fo, inst.extra_length)
+            # print(" ".join("%02x" % c for c in extra_data))
+
+            i = 0
+            # The len() - 4 is to avoid `_slicen` needing to raise an exception
+            # if there are 1-3 bytes left.  We raise that exception ourselves
+            # directly below the loop to make it more clear that it's leftover
+            # data at the _end_ rather than one that is completely malformed.
+            while i < len(extra_data) - 4:
+                extra_id, data_size = struct.unpack(
+                    "<HH",
+                    _slicen(extra_data, i, 4),
+                )
+                # print("Extra", i, extra_id, data_size)
+                i += 4
+                data = _slicen(extra_data, i, data_size)
+                i += data_size
+                extra.append((extra_id, data))
+
+                if extra_id == 1:  # zip64 entry
+                    sizes = [
+                        int.from_bytes(data[n : n + 8], "little")
+                        for n in range(0, len(data), 8)
+                    ]
+                    if inst.usize == UINT32_MAX:
+                        inst.usize = sizes.pop(0)
+                    if inst.csize == UINT32_MAX:
+                        inst.csize = sizes.pop(0)
+                    if inst.relative_offset_of_lfh == UINT32_MAX:
+                        inst.relative_offset_of_lfh = sizes.pop(0)
+                    if inst.disk_start == 0xFFFF:
+                        # GRRR probably wrong
+                        inst.disk_start = sizes.pop(0)
+                    # We can validate here because section 4.5.3 is one of the
+                    # few places that APPNOTE.TXT uses the modern word "MUST" --
+                    # and both "disk" and "header offset" can't exist in the
+                    # LFH.
+                    if len(sizes) != 0:
+                        raise ValueError("Extra zip64 extra in CDH")
+            if i != len(extra_data):
+                raise ValueError("Extra length")
+            inst.parsed_extra = tuple(extra)
+            buf += extra_data
+
+        comment = _readn(fo, inst.comment_length)
+        buf += comment
+        return (inst, buf)
+
     # TODO not happy with the name
     def dump(self) -> bytes:
         flags = self.flags
@@ -371,6 +458,22 @@ class Zip64EOCD:
     offset_start: int
     extensible_data: bytes = b""
 
+    @classmethod
+    def read_from(cls, fo: IO[bytes]) -> Tuple["Zip64EOCD", bytes]:
+        """
+        Assuming fo is ready to read a valid Zip64EOCD, reads the object and
+        returns `(object, buffer)`.  A subsequent seek to the start of the
+        central directory is up to the caller.
+        """
+        buf = _readn(fo, struct.calcsize(ZIP64_EOCD_FORMAT))
+        args = struct.unpack(ZIP64_EOCD_FORMAT, buf)
+        inst = cls(*args)
+        if inst.signature != ZIP64_EOCD_SIGNATURE:
+            raise ValueError("Invalid signature %0x" % (inst.signature,))
+        # TODO check size, read extensible data (although it doesn't matter if
+        # the file position is something deliberate after)
+        return inst
+
     def dump(self) -> bytes:
         # Spec says to do this, whatev
         size = struct.calcsize(ZIP64_EOCD_FORMAT) + len(self.extensible_data) - 12
@@ -412,6 +515,28 @@ class Zip64EOCDLocator:
             self.total_disks,
         )
 
+    @classmethod
+    def locate(cls, fo: IO[bytes]) -> int:
+        """
+        Returns the offset of the zip64 EOCD (or raises).
+        """
+        # This appears before the regular EOCD which contains up to a 64k comment.
+        try:
+            fo.seek(-65 * 1024, os.SEEK_END)
+        except OSError:
+            fo.seek(0, os.SEEK_SET)
+        data = fo.read()
+        sig = ZIP64_EOCD_LOCATOR_SIGNATURE.to_bytes(4, "little")
+        assert data.count(sig) == 1, data.count(sig)
+        offset = data.index(sig)
+        t = cls(
+            *struct.unpack(
+                ZIP64_EOCD_LOCATOR_FORMAT,
+                data[offset : offset + struct.calcsize(ZIP64_EOCD_LOCATOR_FORMAT)],
+            )
+        )
+        return t.relative_offset
+
 
 EOCD_FORMAT = "<LHHHHLLH"
 EOCD_SIGNATURE = 0x06054B50
@@ -427,12 +552,10 @@ class EOCD:
     size: int
     offset_start: int
     comment_length: int
-    comment: str
+    comment: bytes
 
     def dump(self) -> bytes:
-        # TODO it's not clear how to have a utf-8 comment, and cp437 is not
-        # super useful, so restrict to ascii for now.
-        comment_bytes = self.comment.encode("ascii")
+        comment_bytes = self.comment
         return (
             struct.pack(
                 EOCD_FORMAT,
@@ -447,3 +570,38 @@ class EOCD:
             )
             + comment_bytes
         )
+
+    @classmethod
+    def locate(cls, fo: IO[bytes]) -> int:
+        """
+        Returns the offset of the EOCD (or raises).
+        """
+        # This regular EOCD is typically at the very end of the file, but is
+        # variable sized and has up to a 64k comment (that might in
+        # pathalogical cases might contain its own zip because it can store 8-bit data).
+        try:
+            fo.seek(-65 * 1024, os.SEEK_END)
+        except OSError:
+            fo.seek(0, os.SEEK_SET)
+        start = fo.tell()
+
+        data = fo.read()
+        sig = EOCD_SIGNATURE.to_bytes(4, "little")
+        assert data.count(sig) == 1, data.count(sig)
+        offset = data.index(sig)
+        return start + offset
+
+    @classmethod
+    def read_from(cls, fo: IO[bytes]) -> Tuple["EOCD", bytes]:
+        """
+        Assuming fo is ready to read a valid EOCD, reads the object and
+        returns `(object, buffer)`.  A subsequent seek to the start of the
+        central directory is up to the caller.
+        """
+        buf = _readn(fo, struct.calcsize(EOCD_FORMAT))
+        args = struct.unpack(EOCD_FORMAT, buf)
+        inst = cls(*args, comment="")
+        if inst.signature != EOCD_SIGNATURE:
+            raise ValueError("Invalid signature %0x" % (inst.signature,))
+        # TODO store comment
+        return inst
