@@ -187,6 +187,10 @@ class LocalFileHeader:
                         int.from_bytes(data[n : n + 8], "little")
                         for n in range(0, len(data), 8)
                     ]
+                    # If a non-zip64-aware compressor produced this with a file
+                    # whose uncompressed length was exactly UINT32_MAX, we
+                    # don't go down this code path because it won't include the
+                    # extra.
                     if inst.usize == UINT32_MAX:
                         inst.usize = sizes.pop(0)
                     if inst.csize == UINT32_MAX:
@@ -223,6 +227,7 @@ class LocalFileHeader:
             fn = self.filename.encode("utf-8")
             flags |= FLAG_FILENAME_UTF8
 
+        # This modifies the extra of the original, but is idempotent.
         usize = self.usize
         csize = self.csize
         min_ver = self.version_needed
@@ -311,6 +316,14 @@ class CentralDirectoryHeader:
             filename=lfh.filename,  # TODO ordering
         )
 
+    def replace_extra(self, num: int, value: bytes) -> None:
+        n: List[Tuple[int, bytes]] = []
+        for i, v in self.parsed_extra:
+            if i != num:
+                n.append((i, v))
+        n.append((num, value))
+        self.parsed_extra = n
+
     # TODO not happy with the name
     def dump(self) -> bytes:
         flags = self.flags
@@ -322,35 +335,134 @@ class CentralDirectoryHeader:
         except UnicodeEncodeError:
             fn = self.filename.encode("utf-8")
             flags |= FLAG_FILENAME_UTF8
-        # TODO dump these too, they're important
-        extra = b""
-        comment = b""
+
+        # This modifies the extra of the original, but is idempotent.
+        usize = self.usize
+        csize = self.csize
+        relative_offset_of_lfh = self.relative_offset_of_lfh
+        min_ver = self.version_needed
+        if (
+            self.usize >= UINT32_MAX
+            or self.csize >= UINT32_MAX
+            or self.relative_offset_of_lfh >= UINT32_MAX
+        ):
+            zip64_extra = struct.pack(
+                "<QQQ", self.usize, self.csize, self.relative_offset_of_lfh
+            )
+            usize = UINT32_MAX
+            csize = UINT32_MAX
+            relative_offset_of_lfh = UINT32_MAX
+            self.replace_extra(1, zip64_extra)
+            min_ver = max(self.version_needed, ZIP64_VERSION)
+        extra = b"".join(
+            struct.pack("<HH", i[0], len(i[1])) + i[1] for i in self.parsed_extra
+        )
+        extra_length = len(extra)
+
+        comment = (self.file_comment or "").encode("utf-8")
+        comment_length = len(comment)
+
         return (
             struct.pack(
                 CENTRAL_DIRECTORY_FORMAT,
                 self.signature,
                 self.version_made_by,
-                self.version_needed,
+                min_ver,
                 flags,
                 self.method,
                 self.mtime,
                 self.mdate,
                 self.crc32,
-                self.csize,
-                self.usize,
+                csize,
+                usize,
                 # TODO always recalculates filename length, I guess?
                 len(fn),
-                0,  # TODO extra_length
-                0,  # TODO comment_length
+                extra_length,
+                comment_length,
                 self.disk_start,
                 self.internal_attributes,
                 self.external_attributes,
-                self.relative_offset_of_lfh,
+                relative_offset_of_lfh,
             )
             + fn
             + extra
             + comment
         )
+
+    @classmethod
+    def read_from(cls, fo: IO[bytes]) -> Tuple["CentralDirectoryHeader", bytes]:
+        """
+        This isn't currently necessary or part of the public api when streaming.
+
+        Only used for testing...
+        """
+        buf = _readn(fo, struct.calcsize(CENTRAL_DIRECTORY_FORMAT))
+        args = struct.unpack(CENTRAL_DIRECTORY_FORMAT, buf)
+        inst = cls(*args)
+
+        if inst.signature != CENTRAL_DIRECTORY_SIGNATURE:
+            raise ValueError("Invalid signature %0x" % (inst.signature,))
+
+        filename_data = _readn(fo, inst.filename_length)
+        buf += filename_data
+
+        if inst.flags & FLAG_FILENAME_UTF8:
+            inst.filename = filename_data.decode("utf-8")  # can raise
+        else:
+            inst.filename = filename_data.decode("cp437")
+
+        if inst.flags & FLAG_DATA_DESCRIPTOR:
+            # I am not a fan of the complexity and additional validation
+            # required to support this flag; although Python's zipfile.py can
+            # generate such files, I don't see the usefulness and would like to
+            # guarantee that files output by this library will not contain them.
+            raise NotImplementedError("Data descriptor")
+
+        if inst.extra_length:
+            extra: List[Tuple[int, bytes]] = []
+            extra_data = _readn(fo, inst.extra_length)
+            # print(" ".join("%02x" % c for c in extra_data))
+
+            i = 0
+            # The len() - 4 is to avoid `_slicen` needing to raise an exception
+            # if there are 1-3 bytes left.  We raise that exception ourselves
+            # directly below the loop to make it more clear that it's leftover
+            # data at the _end_ rather than one that is completely malformed.
+            while i < len(extra_data) - 4:
+                extra_id, data_size = struct.unpack(
+                    "<HH",
+                    _slicen(extra_data, i, 4),
+                )
+                # print("Extra", i, extra_id, data_size)
+                i += 4
+                data = _slicen(extra_data, i, data_size)
+                i += data_size
+                extra.append((extra_id, data))
+
+                if extra_id == 1:  # zip64 entry
+                    sizes = [
+                        int.from_bytes(data[n : n + 8], "little")
+                        for n in range(0, len(data), 8)
+                    ]
+                    # If a non-zip64-aware compressor produced this with a file
+                    # whose uncompressed length was exactly UINT32_MAX, we
+                    # don't go down this code path because it won't include the
+                    # extra.
+                    if inst.usize == UINT32_MAX:
+                        inst.usize = sizes.pop(0)
+                    if inst.csize == UINT32_MAX:
+                        inst.csize = sizes.pop(0)
+                    if inst.relative_offset_of_lfh == UINT32_MAX:
+                        inst.relative_offset_of_lfh = sizes.pop(0)
+                    # Can we be strict here?
+                    # if len(sizes) != 0:
+                    #     raise ValueError("Extra zip64 extra in CDH")
+            if i != len(extra_data):
+                raise ValueError("Extra length")
+            inst.parsed_extra = tuple(extra)
+            buf += extra_data
+
+        return inst, buf
 
 
 ZIP64_EOCD_FORMAT = "<LQHHLLQQQQ"

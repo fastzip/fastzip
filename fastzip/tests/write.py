@@ -84,3 +84,13 @@ class WZipTest(unittest.TestCase):
         zf = zipfile.ZipFile(b)
         # TODO interrogate the zf to make sure it _was_ zip64
         self.assertEqual(20, len(zf.namelist()))
+
+    def _disabled_test_automatic_zip64(self) -> None:
+        b = io.BytesIO()
+        with WZip(Path("foo.zip"), fobj=b) as z:
+            p = Path("big.bin")
+            z.write(p, p, fobj=io.BytesIO(bytearray(2**32)))
+
+        zf = zipfile.ZipFile(b)
+        info = zf.getinfo("big.bin")
+        self.assertEqual(2**32, info.file_size)
