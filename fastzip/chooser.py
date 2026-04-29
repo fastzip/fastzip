@@ -11,16 +11,16 @@ def op_regex_match(pat: str, flags: int = 0) -> Callable[[str], bool]:
     """
     Operator function that returns a closure that matches strings.
 
-    >>> op_regex_match(r"a{3,}").match("a")
+    >>> op_regex_match(r"a{3,}")("a")
     False
-    >>> op_regex_match(r"a{3,}").match("aaa")
+    >>> op_regex_match(r"a{3,}")("aaa")
     True
-    >>> op_regex_match(r"a{3,}").match("aaaaaaaa")
+    >>> op_regex_match(r"a{3,}")("aaaaaaaa")
     True
 
     Note that fullmatch is used.
 
-    >>> op_regex_match(r"a{3,}").match("aaab")
+    >>> op_regex_match(r"a{3,}")("aaab")
     False
 
     Flags are accepted, but not particularly useful except for `IGNORECASE`.
