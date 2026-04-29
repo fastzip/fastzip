@@ -167,11 +167,9 @@ class LocalFileHeader:
             # print(" ".join("%02x" % c for c in extra_data))
 
             i = 0
-            # The len() - 4 is to avoid `_slicen` needing to raise an exception
-            # if there are 1-3 bytes left.  We raise that exception ourselves
-            # directly below the loop to make it more clear that it's leftover
-            # data at the _end_ rather than one that is completely malformed.
-            while i < len(extra_data) - 4:
+            # The `+ 4 <=` guards against reading a partial header (1-3 bytes
+            # left), raising ValueError below rather than inside _slicen.
+            while i + 4 <= len(extra_data):
                 extra_id, data_size = struct.unpack(
                     "<HH",
                     _slicen(extra_data, i, 4),
