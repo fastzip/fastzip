@@ -28,6 +28,7 @@ from .types import (
     EOCD,
     EOCD_SIGNATURE,
     LocalFileHeader,
+    ZIP64_VERSION,
     ZIP64_EOCD_LOCATOR_SIGNATURE,
     ZIP64_EOCD_SIGNATURE,
     Zip64EOCD,
@@ -112,6 +113,7 @@ class WZip:
 
         self._central_directory = []
         self._central_directory_min_ver = 0
+        self._exc: Optional[BaseException] = None
         self._open_consumer_thread = threading.Thread(target=self._open_consumer)
         self._open_consumer_thread.start()
         self._consumer_thread = threading.Thread(target=self._consumer)
@@ -136,18 +138,24 @@ class WZip:
             self._open_consumer_thread.join()
         with kev("_consumer_thread.join", __name__):
             self._consumer_thread.join()
-        with kev("flush"):
-            self._fobj.flush()
-        with kev("io_executor.shutdown"):
-            self._io_executor.shutdown()
-        with kev("_write_central_dir"):
-            self._write_central_dir()
-        if not self._fobj_provided:
-            with kev("close"):
-                self._fobj.close()
-        self._done = True
-        if self._stats_thread:
-            self._stats_thread.join()
+        exc = self._exc
+        try:
+            with kev("flush"):
+                self._fobj.flush()
+            with kev("io_executor.shutdown"):
+                self._io_executor.shutdown()
+            if exc is None:
+                with kev("_write_central_dir"):
+                    self._write_central_dir()
+        finally:
+            if not self._fobj_provided:
+                with kev("close"):
+                    self._fobj.close()
+            self._done = True
+            if self._stats_thread:
+                self._stats_thread.join()
+        if exc is not None:
+            raise exc
 
     def _stats(self) -> None:
         prev_ts = None
@@ -298,9 +306,6 @@ class WZip:
 
     def _write_central_dir(self) -> None:
         LOG.info("Writing central directory")
-        # Shouldn't be creating empty zips, this is a sanity check
-        assert self._central_directory
-
         first_pos = self._fobj.tell()
         pos = first_pos
         for abs_offset, lfh in self._central_directory:
@@ -309,7 +314,10 @@ class WZip:
                 lfh,
                 abs_offset,
             )
-            data = cdh.dump()
+            data, min_ver = cdh.dump()
+            self._central_directory_min_ver = max(
+                self._central_directory_min_ver, min_ver
+            )
             self._fobj.write(data)
             self._bytes_written += len(data)
             pos += len(data)
@@ -324,11 +332,12 @@ class WZip:
             or self._force_zip64
         ):
             e64_pos = pos
+            zip64_version_needed = max(self._central_directory_min_ver, ZIP64_VERSION)
             e64 = Zip64EOCD(
                 ZIP64_EOCD_SIGNATURE,
                 0,  # Will get replaced
                 65,  # arbitrarily, the version that supports zstd
-                self._central_directory_min_ver,
+                zip64_version_needed,
                 0,
                 0,
                 len(self._central_directory),

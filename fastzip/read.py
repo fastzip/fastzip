@@ -32,9 +32,18 @@ class RZipStream(RZipBase):
         if fobj:
             # Presumed to be at the correct position
             self._fobj = fobj
+            self._fobj_provided = True
         else:
             self._fobj = open(filename, "rb")
+            self._fobj_provided = False
         # TODO support max_search, which requires a tee or seeking
+
+    def __enter__(self) -> "RZipStream":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        if not self._fobj_provided:
+            self._fobj.close()
 
     def entries(
         self, callback: Optional[Callable[[LocalFileHeader], bool]] = None
