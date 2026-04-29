@@ -48,6 +48,14 @@ class ChooserTest(unittest.TestCase):
             ),
         )
 
+    def test_defaults_store_zip_files(self) -> None:
+        for name in ("archive.zip", "data.zip", "foo/bar.zip"):
+            lfh = LocalFileHeader._for_testing(usize=1000, filename=name)
+            self.assertEqual("store", DEFAULT_CHOOSER._choose_compressor(lfh), name)
+
+        lfh = LocalFileHeader._for_testing(usize=1000, filename="archive.tar.gz")
+        self.assertNotEqual("store", DEFAULT_CHOOSER._choose_compressor(lfh))
+
     def test_zstd(self) -> None:
         data = b"Hello, World!!!"
         lfh = LocalFileHeader._for_testing(usize=len(data), filename="foo")
