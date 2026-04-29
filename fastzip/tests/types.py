@@ -4,6 +4,7 @@ from dataclasses import asdict
 from io import BytesIO
 
 from fastzip.types import (
+    BadLocalFileSignature,
     CentralDirectoryHeader,
     LOCAL_FILE_HEADER_FORMAT,
     LOCAL_FILE_HEADER_SIGNATURE,
@@ -30,6 +31,17 @@ class LocalFileHeaderTest(unittest.TestCase):
         self.assertEqual(8_000_000_000, h2.usize)
         self.assertEqual(20, h.version_needed)
         self.assertEqual(45, h2.version_needed)
+
+    def test_bad_signature_raises_and_resets_position(self) -> None:
+        raw = struct.pack(
+            LOCAL_FILE_HEADER_FORMAT,
+            0xDEADBEEF,  # wrong signature
+            20, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        )
+        fo = BytesIO(raw)
+        with self.assertRaises(BadLocalFileSignature):
+            LocalFileHeader.read_from(fo)
+        self.assertEqual(0, fo.tell(), "file position must be reset after bad signature")
 
     def test_extra_zero_length_record(self) -> None:
         # A single extra record with data_size=0 occupies exactly 4 bytes.

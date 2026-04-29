@@ -144,7 +144,8 @@ class LocalFileHeader:
             fo.seek(-len(buf), os.SEEK_CUR)
             raise EndOfLocalFiles()
         if inst.signature != LOCAL_FILE_HEADER_SIGNATURE:
-            raise ValueError("Invalid signature %0x" % (inst.signature,))
+            fo.seek(-len(buf), os.SEEK_CUR)
+            raise BadLocalFileSignature("Invalid signature %#010x" % (inst.signature,))
 
         filename_data = _readn(fo, inst.filename_length)
         buf += filename_data
