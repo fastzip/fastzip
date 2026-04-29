@@ -139,3 +139,11 @@ class WZipTest(unittest.TestCase):
         zf = zipfile.ZipFile(b)
         # TODO interrogate the zf to make sure it _was_ zip64
         self.assertEqual(20, len(zf.namelist()))
+
+    def test_zip64_bytes_written_is_accurate(self) -> None:
+        # _bytes_written was not updated after writing the Zip64 EOCD record
+        # (44 bytes), so it underreported the file size when force_zip64=True.
+        b = io.BytesIO()
+        with WZip(Path("foo.zip"), fobj=b, force_zip64=True) as z:
+            z.write(Path("a.txt"), Path("a.txt"), fobj=io.BytesIO(b"hello"))
+        self.assertEqual(len(b.getvalue()), z._bytes_written)

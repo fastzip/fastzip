@@ -345,7 +345,9 @@ class WZip:
                 central_directory_size,
                 first_pos,
             )
-            self._fobj.write(e64.dump())
+            e64_data = e64.dump()
+            self._fobj.write(e64_data)
+            self._bytes_written += len(e64_data)
             l64 = Zip64EOCDLocator(
                 ZIP64_EOCD_LOCATOR_SIGNATURE,
                 0,
