@@ -36,7 +36,8 @@ def verify(filename: str) -> int:
             crc = zlib.crc32(obj._decompress_for_testing(data))
             if lfh.crc32 != crc:
                 print(
-                    "  %s: %08x != %08x (%d)" % (lfh.filename, crc, lfh.crc32, len(data))
+                    "  %s: %08x != %08x (%d)"
+                    % (lfh.filename, crc, lfh.crc32, len(data))
                 )
                 rc |= 1
             else:
@@ -56,7 +57,8 @@ def extract(filename: str, target_dir: str) -> int:
             crc = zlib.crc32(decompressed)
             if lfh.crc32 != crc:
                 print(
-                    "  %s: %08x != %08x (%d)" % (lfh.filename, crc, lfh.crc32, len(data))
+                    "  %s: %08x != %08x (%d)"
+                    % (lfh.filename, crc, lfh.crc32, len(data))
                 )
                 rc |= 1
 

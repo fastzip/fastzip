@@ -28,9 +28,9 @@ from .types import (
     EOCD,
     EOCD_SIGNATURE,
     LocalFileHeader,
-    ZIP64_VERSION,
     ZIP64_EOCD_LOCATOR_SIGNATURE,
     ZIP64_EOCD_SIGNATURE,
+    ZIP64_VERSION,
     Zip64EOCD,
     Zip64EOCDLocator,
 )

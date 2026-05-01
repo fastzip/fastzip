@@ -36,25 +36,47 @@ class LocalFileHeaderTest(unittest.TestCase):
         raw = struct.pack(
             LOCAL_FILE_HEADER_FORMAT,
             0xDEADBEEF,  # wrong signature
-            20, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            20,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
         )
         fo = BytesIO(raw)
         with self.assertRaises(BadLocalFileSignature):
             LocalFileHeader.read_from(fo)
-        self.assertEqual(0, fo.tell(), "file position must be reset after bad signature")
+        self.assertEqual(
+            0, fo.tell(), "file position must be reset after bad signature"
+        )
 
     def test_extra_zero_length_record(self) -> None:
         # A single extra record with data_size=0 occupies exactly 4 bytes.
         # The old loop condition (i < len - 4) evaluated to (0 < 0) and skipped
         # it entirely, then raised ValueError("Extra length").
         extra = struct.pack("<HH", 0xCAFE, 0)  # id=0xCAFE, data_size=0
-        raw = struct.pack(
-            LOCAL_FILE_HEADER_FORMAT,
-            LOCAL_FILE_HEADER_SIGNATURE,
-            20, 0, 0, 0, 0, 0, 0, 0,
-            3,           # filename_length
-            len(extra),  # extra_length
-        ) + b"foo" + extra
+        raw = (
+            struct.pack(
+                LOCAL_FILE_HEADER_FORMAT,
+                LOCAL_FILE_HEADER_SIGNATURE,
+                20,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                3,  # filename_length
+                len(extra),  # extra_length
+            )
+            + b"foo"
+            + extra
+        )
         h, buf = LocalFileHeader.read_from(BytesIO(raw))
         self.assertEqual(1, len(h.parsed_extra))
         self.assertEqual(0xCAFE, h.parsed_extra[0][0])
