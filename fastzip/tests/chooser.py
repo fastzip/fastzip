@@ -1,6 +1,8 @@
+import doctest
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 
+import fastzip.chooser
 from fastzip.algo import find_compressor_cls
 from fastzip.algo.zstd import ZstdCompressor
 from fastzip.chooser import CompressionChooser, DEFAULT_CHOOSER
@@ -47,6 +49,18 @@ class ChooserTest(unittest.TestCase):
                 )
             ),
         )
+
+    def test_chooser_module_doctests(self) -> None:
+        results = doctest.testmod(fastzip.chooser, verbose=False)
+        self.assertEqual(0, results.failed, f"{results.failed} doctest(s) failed")
+
+    def test_defaults_store_zip_files(self) -> None:
+        for name in ("archive.zip", "data.zip", "foo/bar.zip"):
+            lfh = LocalFileHeader._for_testing(usize=1000, filename=name)
+            self.assertEqual("store", DEFAULT_CHOOSER._choose_compressor(lfh), name)
+
+        lfh = LocalFileHeader._for_testing(usize=1000, filename="archive.tar.gz")
+        self.assertNotEqual("store", DEFAULT_CHOOSER._choose_compressor(lfh))
 
     def test_zstd(self) -> None:
         data = b"Hello, World!!!"

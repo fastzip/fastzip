@@ -144,7 +144,8 @@ class LocalFileHeader:
             fo.seek(-len(buf), os.SEEK_CUR)
             raise EndOfLocalFiles()
         if inst.signature != LOCAL_FILE_HEADER_SIGNATURE:
-            raise ValueError("Invalid signature %0x" % (inst.signature,))
+            fo.seek(-len(buf), os.SEEK_CUR)
+            raise BadLocalFileSignature("Invalid signature %#010x" % (inst.signature,))
 
         filename_data = _readn(fo, inst.filename_length)
         buf += filename_data
@@ -167,11 +168,9 @@ class LocalFileHeader:
             # print(" ".join("%02x" % c for c in extra_data))
 
             i = 0
-            # The len() - 4 is to avoid `_slicen` needing to raise an exception
-            # if there are 1-3 bytes left.  We raise that exception ourselves
-            # directly below the loop to make it more clear that it's leftover
-            # data at the _end_ rather than one that is completely malformed.
-            while i < len(extra_data) - 4:
+            # The `+ 4 <=` guards against reading a partial header (1-3 bytes
+            # left), raising ValueError below rather than inside _slicen.
+            while i + 4 <= len(extra_data):
                 extra_id, data_size = struct.unpack(
                     "<HH",
                     _slicen(extra_data, i, 4),
@@ -309,10 +308,11 @@ class CentralDirectoryHeader:
             external_attributes=0,
             relative_offset_of_lfh=offset,
             filename=lfh.filename,  # TODO ordering
+            parsed_extra=tuple(lfh.parsed_extra),
         )
 
     # TODO not happy with the name
-    def dump(self) -> bytes:
+    def dump(self) -> Tuple[bytes, int]:
         flags = self.flags
 
         assert self.filename is not None
@@ -322,35 +322,58 @@ class CentralDirectoryHeader:
         except UnicodeEncodeError:
             fn = self.filename.encode("utf-8")
             flags |= FLAG_FILENAME_UTF8
-        # TODO dump these too, they're important
-        extra = b""
-        comment = b""
+
+        usize = self.usize
+        csize = self.csize
+        offset = self.relative_offset_of_lfh
+        min_ver = self.version_needed
+        zip64_values = []
+        if usize >= UINT32_MAX:
+            zip64_values.append(usize)
+            usize = UINT32_MAX
+        if csize >= UINT32_MAX:
+            zip64_values.append(csize)
+            csize = UINT32_MAX
+        if offset >= UINT32_MAX:
+            zip64_values.append(offset)
+            offset = UINT32_MAX
+
+        parsed_extra = [item for item in self.parsed_extra if item[0] != 1]
+        if zip64_values:
+            parsed_extra.append(
+                (1, struct.pack("<" + "Q" * len(zip64_values), *zip64_values))
+            )
+            min_ver = max(min_ver, ZIP64_VERSION)
+
+        extra = b"".join(
+            struct.pack("<HH", i[0], len(i[1])) + i[1] for i in parsed_extra
+        )
+        comment = (self.file_comment or "").encode("ascii")
         return (
             struct.pack(
                 CENTRAL_DIRECTORY_FORMAT,
                 self.signature,
                 self.version_made_by,
-                self.version_needed,
+                min_ver,
                 flags,
                 self.method,
                 self.mtime,
                 self.mdate,
                 self.crc32,
-                self.csize,
-                self.usize,
-                # TODO always recalculates filename length, I guess?
+                csize,
+                usize,
                 len(fn),
-                0,  # TODO extra_length
-                0,  # TODO comment_length
+                len(extra),
+                len(comment),
                 self.disk_start,
                 self.internal_attributes,
                 self.external_attributes,
-                self.relative_offset_of_lfh,
+                offset,
             )
             + fn
             + extra
             + comment
-        )
+        ), min_ver
 
 
 ZIP64_EOCD_FORMAT = "<LQHHLLQQQQ"

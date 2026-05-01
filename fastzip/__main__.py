@@ -22,45 +22,52 @@ def compressor_from_method(method: int) -> BaseCompressor:
         return find_compressor_cls("store")[0](1)
     elif method == 8:
         return find_compressor_cls("deflate")[0](1)
+    elif method == 93:
+        return find_compressor_cls("zstd")[0](1)
     else:
         raise ValueError(method)
 
 
 def verify(filename: str) -> int:
-    z = RZipStream(Path(filename))
-
     rc = 0
-    for lfh, header_data, data in z.entries():
-        obj = compressor_from_method(lfh.method)
-        crc = zlib.crc32(obj._decompress_for_testing(data))
-        if lfh.crc32 != crc:
-            print("  %s: %08x != %08x (%d)" % (lfh.filename, crc, lfh.crc32, len(data)))
-            rc |= 1
-        else:
-            print("  %s: ok" % (lfh.filename,))
+    with RZipStream(Path(filename)) as z:
+        for lfh, header_data, data in z.entries():
+            obj = compressor_from_method(lfh.method)
+            crc = zlib.crc32(obj._decompress_for_testing(data))
+            if lfh.crc32 != crc:
+                print(
+                    "  %s: %08x != %08x (%d)"
+                    % (lfh.filename, crc, lfh.crc32, len(data))
+                )
+                rc |= 1
+            else:
+                print("  %s: ok" % (lfh.filename,))
 
     return rc
 
 
 def extract(filename: str, target_dir: str) -> int:
-    z = RZipStream(Path(filename))
     target_path = Path(target_dir)
 
     rc = 0
-    for lfh, header_data, data in z.entries():
-        obj = compressor_from_method(lfh.method)
-        decompressed = obj._decompress_for_testing(data)
-        crc = zlib.crc32(decompressed)
-        if lfh.crc32 != crc:
-            print("  %s: %08x != %08x (%d)" % (lfh.filename, crc, lfh.crc32, len(data)))
-            rc |= 1
+    with RZipStream(Path(filename)) as z:
+        for lfh, header_data, data in z.entries():
+            obj = compressor_from_method(lfh.method)
+            decompressed = obj._decompress_for_testing(data)
+            crc = zlib.crc32(decompressed)
+            if lfh.crc32 != crc:
+                print(
+                    "  %s: %08x != %08x (%d)"
+                    % (lfh.filename, crc, lfh.crc32, len(data))
+                )
+                rc |= 1
 
-        assert lfh.filename is not None
-        if lfh.filename.endswith("/"):
-            (target_path / lfh.filename).mkdir(parents=True, exist_ok=True)
-        else:
-            (target_path / lfh.filename).parent.mkdir(parents=True, exist_ok=True)
-        (target_path / lfh.filename).write_bytes(decompressed)
+            assert lfh.filename is not None
+            if lfh.filename.endswith("/"):
+                (target_path / lfh.filename).mkdir(parents=True, exist_ok=True)
+            else:
+                (target_path / lfh.filename).parent.mkdir(parents=True, exist_ok=True)
+            (target_path / lfh.filename).write_bytes(decompressed)
 
     return rc
 
