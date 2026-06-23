@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import stat
 import threading
 import time
 import traceback
@@ -205,6 +206,8 @@ class WZip:
         fobj: Optional[BinaryIO],
         local_path: Path,
         archive_path: Path,
+        synthetic_mtime: Optional[int] = None,
+        synthetic_mode: Optional[int] = None,
     ) -> Tuple[LocalFileHeader, WrappedFile]:
         f: BinaryIO
         with kev("open", __name__, path=local_path.as_posix()):
@@ -218,6 +221,8 @@ class WZip:
             lfh = LocalFileHeader.from_wrapped_file(
                 (archive_path if archive_path is not None else local_path),
                 wf,
+                synthetic_mtime=synthetic_mtime,
+                synthetic_mode=synthetic_mode,
             )
         with kev("mmapwrapper"):
             wf.mmapwrapper()
@@ -233,6 +238,7 @@ class WZip:
         local_path: Path,
         archive_path: Optional[Path] = None,
         synthetic_mtime: Optional[int] = None,
+        synthetic_mode: Optional[int] = None,
         fobj: Optional[BinaryIO] = None,
     ) -> None:
         with kev("acquire", "file_budget"):
@@ -247,9 +253,42 @@ class WZip:
                 local_path,
                 # TODO this line is duplicated twice, and is a little questionable to begin with.
                 (archive_path if archive_path is not None else local_path),
+                synthetic_mtime,
+                synthetic_mode,
             )
         with kev("put", "open_queue"):
             self._open_queue.put(fut)
+
+    def write_symlink(
+        self,
+        archive_path: Path,
+        target: Union[str, os.PathLike[str]],
+        synthetic_mtime: Optional[int] = None,
+        mode: Optional[int] = None,
+    ) -> None:
+        """
+        Write a symbolic link entry into the archive.
+
+        The link `target` is stored verbatim as the entry's (uncompressed)
+        content, and the unix mode is flagged with ``S_IFLNK`` so that
+        compliant extractors (Info-ZIP ``unzip``, cpython ``zipfile``, etc.)
+        recreate it as a symlink.  By default the mode is ``S_IFLNK | 0o777``,
+        matching the convention that linux symlinks always report ``0o777``.
+        """
+        target_str = os.fspath(target)
+        if mode is None:
+            mode = stat.S_IFLNK | 0o777
+        else:
+            # Make sure the link type bits are present even if the caller only
+            # passed permission bits.
+            mode |= stat.S_IFLNK
+        self.write(
+            Path(archive_path),
+            archive_path=Path(archive_path),
+            synthetic_mtime=synthetic_mtime,
+            synthetic_mode=mode,
+            fobj=io.BytesIO(target_str.encode("utf-8")),
+        )
 
     def enqueue_precompressed(
         self,

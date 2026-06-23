@@ -1,5 +1,6 @@
 import io
 import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -112,3 +113,29 @@ class WZipTest(unittest.TestCase):
                 stored_mode,
                 f"expected unix mode {mode:o}, got {stored_mode:o}",
             )
+
+    @unittest.skipIf(sys.platform == "win32", "symlinks not supported on windows")
+    def test_write_symlink(self) -> None:
+        # write_symlink should store the link target as the (uncompressed)
+        # entry content and flag the entry as a symlink via S_IFLNK in the
+        # external attributes, so compliant extractors recreate it as a link.
+        target = "libsome-1.1.so"
+        b = io.BytesIO()
+        with WZip(Path("foo.zip"), fobj=b) as z:
+            z.write_symlink(
+                Path("lib/libsome.so.1"),
+                target,
+                synthetic_mtime=1577836800,
+            )
+
+        zf = zipfile.ZipFile(b)
+        self.assertEqual(["lib/libsome.so.1"], zf.namelist())
+        info = zf.getinfo("lib/libsome.so.1")
+        stored_mode = info.external_attr >> 16
+        self.assertTrue(
+            stat.S_ISLNK(stored_mode),
+            f"expected S_IFLNK, got mode {stored_mode:o}",
+        )
+        self.assertEqual(0o777, stored_mode & 0o7777)
+        self.assertEqual(target, zf.read("lib/libsome.so.1").decode())
+        self.assertEqual((2020, 1, 1, 0, 0, 0), info.date_time)
