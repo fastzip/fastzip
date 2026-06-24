@@ -1,5 +1,6 @@
 import io
 import os
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -85,6 +86,7 @@ class WZipTest(unittest.TestCase):
         # TODO interrogate the zf to make sure it _was_ zip64
         self.assertEqual(20, len(zf.namelist()))
 
+    @unittest.skipIf(sys.platform == "win32", "unix permissions not supported on windows")
     def test_unix_permissions_preserved(self) -> None:
         # Write a real file with a distinctive, non-default mode, zip it with
         # fastzip, and verify the unix permission bits survive the round-trip.
