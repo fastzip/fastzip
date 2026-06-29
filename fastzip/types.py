@@ -50,6 +50,10 @@ class LocalFileHeader:
 
     filename: Optional[str] = None
     parsed_extra: Sequence[Tuple[int, bytes]] = ()
+    # Unix mode bits (st_mode) for this entry, if known.  Not serialized into
+    # the local file header itself; carried so the central directory can encode
+    # it in external_attributes.
+    mode: Optional[int] = None
 
     @classmethod
     def from_wrapped_file(
@@ -62,7 +66,7 @@ class LocalFileHeader:
 
         with kev("stat", __name__):
             stat = fo.stat()
-        # mode = synthetic_mode if synthetic_mode is not None else stat.st_mode
+        mode = synthetic_mode if synthetic_mode is not None else stat.st_mode
         mtime = synthetic_mtime if synthetic_mtime is not None else stat.st_mtime
         # TODO this loses a little bit of precision, and someday we probably
         # want to store the higher-resolution unix extra as well.
@@ -95,6 +99,7 @@ class LocalFileHeader:
                 filename_length=len(filename_str),
                 extra_length=0,  # TODO unix extra, zip64 extra
                 filename=filename_str,
+                mode=mode,
             )
 
     @classmethod
@@ -290,9 +295,18 @@ class CentralDirectoryHeader:
     def from_lfh_and_relative_offset(
         cls, lfh: LocalFileHeader, offset: int
     ) -> "CentralDirectoryHeader":
+        # Encode unix permission bits in the high 16 bits of external_attributes
+        # and flag the host system as unix (3) in version_made_by, matching the
+        # convention used by Info-ZIP and cpython's zipfile.
+        if lfh.mode is not None:
+            version_made_by = (3 << 8) | lfh.version_needed
+            external_attributes = (lfh.mode & 0xFFFF) << 16
+        else:
+            version_made_by = 0
+            external_attributes = 0
         return cls(
             signature=CENTRAL_DIRECTORY_SIGNATURE,
-            version_made_by=0,  # TODO
+            version_made_by=version_made_by,
             version_needed=lfh.version_needed,
             flags=lfh.flags,
             method=lfh.method,
@@ -306,7 +320,7 @@ class CentralDirectoryHeader:
             comment_length=0,  # TODO be able to set?
             disk_start=0,  # We only want to support single-disk archives
             internal_attributes=0,  # TODO WUT
-            external_attributes=0,
+            external_attributes=external_attributes,
             relative_offset_of_lfh=offset,
             filename=lfh.filename,  # TODO ordering
         )

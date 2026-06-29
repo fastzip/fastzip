@@ -1,5 +1,7 @@
 import io
 import os
+import stat
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -84,3 +86,56 @@ class WZipTest(unittest.TestCase):
         zf = zipfile.ZipFile(b)
         # TODO interrogate the zf to make sure it _was_ zip64
         self.assertEqual(20, len(zf.namelist()))
+
+    @unittest.skipIf(sys.platform == "win32", "unix permissions not supported on windows")
+    def test_unix_permissions_preserved(self) -> None:
+        # Write a real file with a distinctive, non-default mode, zip it with
+        # fastzip, and verify the unix permission bits survive the round-trip.
+        #
+        # By convention, the unix mode is stored in the high 16 bits of the
+        # central directory's external_attributes field (this is how
+        # cpython's zipfile and Info-ZIP encode it).
+        mode = 0o750
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "script.sh"
+            src.write_bytes(b"#!/bin/sh\necho hello\n")
+            os.chmod(src, mode)
+
+            b = io.BytesIO()
+            with WZip(Path("foo.zip"), fobj=b) as z:
+                z.write(src, Path("script.sh"))
+
+            zf = zipfile.ZipFile(b)
+            info = zf.getinfo("script.sh")
+            stored_mode = (info.external_attr >> 16) & 0o7777
+            self.assertEqual(
+                mode,
+                stored_mode,
+                f"expected unix mode {mode:o}, got {stored_mode:o}",
+            )
+
+    @unittest.skipIf(sys.platform == "win32", "symlinks not supported on windows")
+    def test_write_symlink(self) -> None:
+        # write_symlink should store the link target as the (uncompressed)
+        # entry content and flag the entry as a symlink via S_IFLNK in the
+        # external attributes, so compliant extractors recreate it as a link.
+        target = "libsome-1.1.so"
+        b = io.BytesIO()
+        with WZip(Path("foo.zip"), fobj=b) as z:
+            z.write_symlink(
+                Path("lib/libsome.so.1"),
+                target,
+                synthetic_mtime=1577836800,
+            )
+
+        zf = zipfile.ZipFile(b)
+        self.assertEqual(["lib/libsome.so.1"], zf.namelist())
+        info = zf.getinfo("lib/libsome.so.1")
+        stored_mode = info.external_attr >> 16
+        self.assertTrue(
+            stat.S_ISLNK(stored_mode),
+            f"expected S_IFLNK, got mode {stored_mode:o}",
+        )
+        self.assertEqual(0o777, stored_mode & 0o7777)
+        self.assertEqual(target, zf.read("lib/libsome.so.1").decode())
+        self.assertEqual((2020, 1, 1, 0, 0, 0), info.date_time)
