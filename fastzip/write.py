@@ -193,10 +193,18 @@ class WZip:
 
         Slightly slower because it has to stat up front, but you also get
         reasonable exceptions in the main thread.
+
+        Empty directories are preserved by writing an explicit directory entry
+        for them; non-empty directories are represented implicitly by the files
+        they contain.
         """
         if local_path.is_dir():
-            for p in local_path.iterdir():
-                self.rwrite(p)
+            children = list(local_path.iterdir())
+            if not children:
+                self.write_dir(local_path)
+            else:
+                for p in children:
+                    self.rwrite(p)
         else:
             assert os.access(local_path, os.R_OK)
             self.write(local_path)
@@ -290,6 +298,34 @@ class WZip:
             fobj=io.BytesIO(target_str.encode("utf-8")),
         )
 
+    def write_dir(
+        self,
+        archive_path: Path,
+        synthetic_mtime: Optional[int] = None,
+        mode: Optional[int] = None,
+    ) -> None:
+        """
+        Write an (empty) directory entry into the archive.
+
+        Directory entries have no content and a name ending in ``/`` so that
+        extractors recreate the directory even when it contains no files.  The
+        unix mode is flagged with ``S_IFDIR`` (defaulting to
+        ``S_IFDIR | 0o755``) so the entry is recognized as a directory.
+        """
+        if mode is None:
+            mode = stat.S_IFDIR | 0o755
+        else:
+            # Ensure the directory type bits are present even if the caller
+            # only passed permission bits.
+            mode |= stat.S_IFDIR
+        self.write(
+            Path(archive_path),
+            archive_path=Path(archive_path),
+            synthetic_mtime=synthetic_mtime,
+            synthetic_mode=mode,
+            fobj=io.BytesIO(b""),
+        )
+
     def enqueue_precompressed(
         self,
         lfh: LocalFileHeader,
@@ -337,8 +373,9 @@ class WZip:
 
     def _write_central_dir(self) -> None:
         LOG.info("Writing central directory")
-        # Shouldn't be creating empty zips, this is a sanity check
-        assert self._central_directory
+        # An empty central directory is valid and produces an empty zip
+        # (just an EOCD record), mirroring `zipfile.ZipFile(..., "w")` with
+        # nothing written to it.
 
         first_pos = self._fobj.tell()
         pos = first_pos

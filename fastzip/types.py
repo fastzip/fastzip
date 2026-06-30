@@ -1,4 +1,5 @@
 import os
+import stat as stat_module
 import struct
 import time
 from dataclasses import dataclass
@@ -84,6 +85,12 @@ class LocalFileHeader:
 
         with kev("as_posix", __name__):
             filename_str = filename.as_posix()  # '/' normalized value
+
+        # Directory entries are identified by a trailing slash in the archive
+        # name.  Path.as_posix() strips it, so re-add it when the mode marks
+        # this as a directory (S_IFDIR).
+        if stat_module.S_ISDIR(mode) and not filename_str.endswith("/"):
+            filename_str += "/"
 
         with kev("ret", __name__):
             return cls(
